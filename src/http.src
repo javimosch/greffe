@@ -1,0 +1,159 @@
+// greffe — HTTP API (same port as the peer protocol). JSON everywhere, no auth:
+// the chain is public by design; writes need a valid signature from a member.
+
+type Status struct { tool string  version string  name string  pub string  role string  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  uptime int  port int }
+
+type Rec struct { height int  id string  author string  ts int  kind string  payload string  sig string  confirmations int }
+
+type PutResult struct { id string  status string  height int }
+
+type VerifyResult struct { ok bool  height int  weight int  error string }
+
+func http_json(status, body) (s) {
+    s = "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)) + "\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n" + body
+}
+
+func http_text(status, body) (s) {
+    s = "HTTP/1.1 " + status + "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+func http_error(status, msg) (s) {
+    s = http_json(status, "{\"error\":" + json(msg) + "}")
+}
+
+func path_only(p) (out) {
+    out = p
+    q := index(p, "?")
+    if q >= 0 { out = substr(p, 0, q) }
+}
+
+func qint(req, name, def) (v) {
+    v = def
+    s := query(req, name)
+    if len(s) > 0 { v = parse_int(s) }
+}
+
+func node_status(n) (st) {
+    tip := chain_tip(n.chain)
+    role := "full"
+    if node_is_validator(n) { role = "validator" }
+    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.blocks[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, uptime: now() - n.started, port: n.cfg.port}
+}
+
+func rec_of(b, e, tipheight) (r) {
+    r = Rec{height: b.height, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: tipheight - b.height + 1}
+}
+
+func entries_list(n, kind, from, limit) (recs) {
+    recs = []Rec{}
+    tip := chain_tip(n.chain)
+    i := from
+    if i < 1 { i = 1 }
+    while i < len(n.chain.blocks) && len(recs) < limit {
+        b := n.chain.blocks[i]
+        j := 0
+        while j < len(b.entries) && len(recs) < limit {
+            e := b.entries[j]
+            if len(kind) == 0 || e.kind == kind { recs = append(recs, rec_of(b, e, tip.height)) }
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+func entry_find(n, id) (r, found) {
+    found = false
+    tip := chain_tip(n.chain)
+    i := len(n.chain.blocks) - 1
+    while i >= 1 && found == false {
+        b := n.chain.blocks[i]
+        j := 0
+        while j < len(b.entries) {
+            if b.entries[j].id == id { r = rec_of(b, b.entries[j], tip.height)  found = true }
+            j = j + 1
+        }
+        i = i - 1
+    }
+    if found { return }
+    k := 0
+    while k < len(n.pending) {
+        if n.pending[k].id == id {
+            e := n.pending[k]
+            r = Rec{height: -1, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: 0}
+            found = true
+        }
+        k = k + 1
+    }
+}
+
+func guide_text() (s) {
+    s = "greffe " + greffe_version() + " — a transparent, append-only registry for a federation of associations.\n\n"
+    s = s + "One TCP port serves both peers (JSON lines) and this HTTP API. No money, no mining: validators (the association's servers) seal blocks in round-robin; members sign entries.\n\n"
+    s = s + "GET  /status                     node, chain tip, validators, members, peers\n"
+    s = s + "GET  /peers                      known peers with height/weight/last seen\n"
+    s = s + "GET  /blocks?from=N&limit=M      blocks (default from tip-10)\n"
+    s = s + "GET  /blocks/N                   one block\n"
+    s = s + "GET  /entries?kind=K&from=H&limit=M   entries in chain order\n"
+    s = s + "GET  /entries/<id>               one entry (height -1 = still pending)\n"
+    s = s + "GET  /pending                    entries waiting to be sealed\n"
+    s = s + "POST /entries  {id,author,ts,kind,payload,sig}   submit a signed entry (201 -> pending)\n"
+    s = s + "GET  /verify                     re-verify every block and signature from genesis\n"
+    s = s + "GET  /health                     ok\n\n"
+    s = s + "entry.id = sha256(author|ts|kind|payload); sig = ed25519(seed, id). Governance kinds (validator author only): validator.add / validator.remove / member.add / member.remove with payload = public key hex.\n"
+    s = s + "CLI: greffe status | put --kind K --payload P | entries | verify | grant validator|member <pub> | guide\n"
+}
+
+func handle_http(n, req) (out, res) {
+    out = n
+    p := path_only(req.path)
+    if req.method == "GET" && (p == "/" || p == "/llms.txt" || p == "/guide") { res = http_text("200 OK", guide_text())  return }
+    if req.method == "GET" && p == "/health" { res = http_json("200 OK", "{\"ok\":true}")  return }
+    if req.method == "GET" && p == "/status" { res = http_json("200 OK", json(node_status(out)))  return }
+    if req.method == "GET" && p == "/genesis-validators" { res = http_json("200 OK", json(out.cfg.validators))  return }
+    if req.method == "GET" && p == "/peers" { res = http_json("200 OK", json(out.peers))  return }
+    if req.method == "GET" && p == "/pending" { res = http_json("200 OK", json(out.pending))  return }
+    if req.method == "GET" && p == "/verify" {
+        c, applied, err := chain_rebuild(out.cfg, out.chain.blocks)
+        vr := VerifyResult{ok: len(err) == 0 && applied == len(out.chain.blocks), height: applied - 1, weight: c.weight, error: err}
+        res = http_json("200 OK", json(vr))
+        return
+    }
+    if req.method == "GET" && p == "/blocks" {
+        tip := chain_tip(out.chain)
+        from := qint(req, "from", tip.height - 10)
+        limit := qint(req, "limit", 100)
+        if limit > 500 { limit = 500 }
+        res = http_json("200 OK", json(blocks_from(out, from, limit)))
+        return
+    }
+    if req.method == "GET" && has_prefix(p, "/blocks/") {
+        h := parse_int(param(p, "/blocks/"))
+        if h < 0 || h >= len(out.chain.blocks) { res = http_error("404 Not Found", "no block at height " + str(h))  return }
+        res = http_json("200 OK", json(out.chain.blocks[h]))
+        return
+    }
+    if req.method == "GET" && p == "/entries" {
+        limit := qint(req, "limit", 100)
+        if limit > 1000 { limit = 1000 }
+        res = http_json("200 OK", json(entries_list(out, query(req, "kind"), qint(req, "from", 1), limit)))
+        return
+    }
+    if req.method == "GET" && has_prefix(p, "/entries/") {
+        r, found := entry_find(out, param(p, "/entries/"))
+        if found == false { res = http_error("404 Not Found", "unknown entry")  return }
+        res = http_json("200 OK", json(r))
+        return
+    }
+    if req.method == "POST" && p == "/entries" {
+        if len(req.body) == 0 { res = http_error("400 Bad Request", "empty body")  return }
+        e := parse(req.body, Entry{})
+        o, ok, reason := pending_accept(out, e)
+        out = o
+        if ok == false { res = http_error("400 Bad Request", reason)  return }
+        store_save_pending(out.datadir, out.pending)
+        node_broadcast(out, json(Msg{t: "entry", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: 0, blocks: []Block{}, entry: e, block: Block{}, err: ""}))
+        res = http_json("201 Created", json(PutResult{id: e.id, status: "pending", height: -1}))
+        return
+    }
+    res = http_error("404 Not Found", "unknown route; GET / for the guide")
+}

@@ -1,0 +1,1 @@
+func main() { cli_main(args()) }

@@ -1,0 +1,207 @@
+// greffe — CLI: agent-first (JSON on stdout, errors as JSON on stderr, exit 0 ok / 1 error / 2 usage / 90 verify failed).
+
+func greffe_version() (v) { v = "0.1.0" }
+
+func out_ok(s) { println(s)  flush() }
+
+func out_fail(msg, code) {
+    eprint("{\"error\":" + json(msg) + "}")
+    exit(code)
+}
+
+func eprint(s) { write(2, s + "\n") }
+
+func default_data() (d) {
+    d = env("GREFFE_DATA")
+    if len(d) == 0 { d = env("HOME") + "/.greffe" }
+}
+
+func cli_flags(prog) (fs) {
+    fs = new_flags(prog)
+    fs = flag_str(fs, "data", "d", default_data(), "data directory (env GREFFE_DATA, default ~/.greffe)")
+    fs = flag_str(fs, "node", "n", "", "node URL (default http://127.0.0.1:<config port>)")
+    fs = flag_str(fs, "name", "", "", "init: federation name (shared by every node)")
+    fs = flag_int(fs, "port", "p", "7420", "init: TCP port for peers + HTTP")
+    fs = flag_str(fs, "validators", "", "", "init: comma-separated genesis validator public keys (default: this node)")
+    fs = flag_str(fs, "peers", "", "", "init: comma-separated host:port peers")
+    fs = flag_str(fs, "join", "j", "", "init: copy name/genesis/validators from a running node URL and peer with it")
+    fs = flag_int(fs, "genesis-ts", "", "0", "init: genesis timestamp (must match across nodes; default now)")
+    fs = flag_int(fs, "block-interval", "", "5", "init: seconds between out-of-turn seal attempts")
+    fs = flag_int(fs, "sync-interval", "", "10", "init: seconds between peer syncs")
+    fs = flag_str(fs, "kind", "k", "", "put: entry kind (e.g. decision, tool.release, member.add)")
+    fs = flag_str(fs, "payload", "", "", "put: entry payload (any text, JSON encouraged)")
+    fs = flag_int(fs, "from", "", "-1", "blocks/entries: start height")
+    fs = flag_int(fs, "limit", "l", "100", "blocks/entries: max items")
+    fs = flag_bool(fs, "wait", "w", "put: block until the entry is sealed (up to 60s)")
+    fs = flag_bool(fs, "force", "f", "init: overwrite an existing data directory")
+}
+
+func node_url(fs) (u) {
+    u = flag_get(fs, "node")
+    if len(u) > 0 { return }
+    cfg, ok := store_load_config(flag_get(fs, "data"))
+    port := 7420
+    if ok { port = cfg.port }
+    u = "http://127.0.0.1:" + str(port)
+}
+
+func api_get(fs, path) (body) {
+    status, b, err := http_get(node_url(fs) + path)
+    if len(err) > 0 { out_fail("node unreachable at " + node_url(fs) + ": " + err, 1) }
+    if status >= 400 { eprint(b)  exit(1) }
+    body = b
+}
+
+func csv_list(s) (out) {
+    out = []string{}
+    if len(trim(s)) == 0 { return }
+    parts := split(s, ",")
+    i := 0
+    while i < len(parts) { if len(trim(parts[i])) > 0 { out = append(out, trim(parts[i])) }  i = i + 1 }
+}
+
+func cmd_init(fs) {
+    dir := flag_get(fs, "data")
+    if len(read_file(store_config_path(dir))) > 0 && flag_on(fs, "force") == false { out_fail("already initialised: " + dir + " (use --force)", 1) }
+    mkdir(dir)
+    seedhex := to_hex(rand_bytes(32))
+    pub := to_hex(ed25519_pub(from_hex(seedhex)))
+    cfg := Config{name: flag_get(fs, "name"), genesis_ts: flag_int_val(fs, "genesis-ts"), validators: csv_list(flag_get(fs, "validators")), members: []string{}, peers: csv_list(flag_get(fs, "peers")), port: flag_int_val(fs, "port"), block_interval: flag_int_val(fs, "block-interval"), sync_interval: flag_int_val(fs, "sync-interval")}
+    joinurl := flag_get(fs, "join")
+    if len(joinurl) > 0 {
+        status, body, err := http_get(joinurl + "/status")
+        if len(err) > 0 || status != 200 { out_fail("cannot join " + joinurl + ": " + err, 1) }
+        st := parse(body, Status{})
+        // genesis = f(name, genesis_ts, genesis validators): fetch block 0's inputs from the peer's config
+        s2, b0, e2 := http_get(joinurl + "/blocks/0")
+        if len(e2) > 0 || s2 != 200 { out_fail("cannot read genesis from " + joinurl, 1) }
+        g := parse(b0, Block{})
+        cfg.name = st.name
+        cfg.genesis_ts = g.ts
+        s3, gv, e3 := http_get(joinurl + "/genesis-validators")
+        if len(e3) == 0 && s3 == 200 { cfg.validators = parse(gv, []string{}) }
+        host := joinurl
+        if has_prefix(host, "http://") { host = substr(host, 7, len(host)) }
+        if has_prefix(host, "https://") { host = substr(host, 8, len(host)) }
+        c := index(host, "/")
+        if c >= 0 { host = substr(host, 0, c) }
+        if index(host, ":") < 0 { host = host + ":" + str(st.port) }
+        cfg.peers = add_unique(cfg.peers, host)
+    }
+    if len(cfg.name) == 0 { cfg.name = "greffe" }
+    if cfg.genesis_ts == 0 { cfg.genesis_ts = now() }
+    if len(cfg.validators) == 0 { cfg.validators = []string{pub} }
+    if store_save_seed(dir, seedhex) == false { out_fail("cannot write " + store_key_path(dir), 1) }
+    if store_save_config(dir, cfg) == false { out_fail("cannot write " + store_config_path(dir), 1) }
+    store_rewrite_blocks(dir, []Block{genesis_block(cfg)})
+    role := "full"
+    if is_in(cfg.validators, pub) { role = "validator" }
+    out_ok("{\"data\":" + json(dir) + ",\"pub\":\"" + pub + "\",\"role\":\"" + role + "\",\"name\":" + json(cfg.name) + ",\"genesis\":\"" + genesis_hash(cfg) + "\",\"port\":" + str(cfg.port) + ",\"peers\":" + json(cfg.peers) + "}")
+}
+
+func cmd_key(fs) {
+    seedhex := store_load_seed(flag_get(fs, "data"))
+    if len(seedhex) != 64 { out_fail("no node.key in " + flag_get(fs, "data"), 1) }
+    out_ok("{\"pub\":\"" + to_hex(ed25519_pub(from_hex(seedhex))) + "\"}")
+}
+
+func cmd_put(fs, kind, payload) {
+    if len(kind) == 0 { out_fail("put needs --kind", 2) }
+    seedhex := store_load_seed(flag_get(fs, "data"))
+    if len(seedhex) != 64 { out_fail("no node.key in " + flag_get(fs, "data") + " (run greffe init)", 1) }
+    e := entry_make(seedhex, kind, payload)
+    status, body, err := http_request("POST", node_url(fs) + "/entries", []string{"Content-Type: application/json"}, json(e))
+    if len(err) > 0 { out_fail("node unreachable: " + err, 1) }
+    if status >= 400 { eprint(body)  exit(1) }
+    if flag_on(fs, "wait") == false { out_ok(body)  return }
+    waited := 0
+    while waited < 60 {
+        sleep(1000)
+        waited = waited + 1
+        s2, b2, e2 := http_get(node_url(fs) + "/entries/" + e.id)
+        if len(e2) == 0 && s2 == 200 {
+            r := parse(b2, Rec{})
+            if r.height >= 0 { out_ok(b2)  return }
+        }
+    }
+    out_fail("entry " + e.id + " still pending after 60s", 1)
+}
+
+func cmd_verify(fs) {
+    body := api_get(fs, "/verify")
+    vr := parse(body, VerifyResult{})
+    out_ok(body)
+    if vr.ok == false { exit(90) }
+}
+
+func cmd_guide() {
+    out_ok(json(guide_text()))
+}
+
+func cli_main(argv) {
+    if len(argv) < 2 { usage() }
+    cmd := argv[1]
+    fs := cli_flags("greffe " + cmd)
+    fs = parse_flags(fs, shift(argv, 1))
+    if flag_on(fs, "help") { eprint(flag_usage(fs))  exit(0) }
+    rest := flag_args(fs)
+    if cmd == "version" { out_ok("{\"tool\":\"greffe\",\"version\":\"" + greffe_version() + "\"}")  return }
+    if cmd == "guide" { cmd_guide()  return }
+    if cmd == "init" { cmd_init(fs)  return }
+    if cmd == "key" { cmd_key(fs)  return }
+    if cmd == "serve" {
+        n, err := node_load(flag_get(fs, "data"))
+        if len(err) > 0 { out_fail(err, 1) }
+        node_serve(n)
+        return
+    }
+    if cmd == "status" { out_ok(api_get(fs, "/status"))  return }
+    if cmd == "peers" { out_ok(api_get(fs, "/peers"))  return }
+    if cmd == "pending" { out_ok(api_get(fs, "/pending"))  return }
+    if cmd == "verify" { cmd_verify(fs)  return }
+    if cmd == "blocks" {
+        q := "?limit=" + str(flag_int_val(fs, "limit"))
+        if flag_int_val(fs, "from") >= 0 { q = q + "&from=" + str(flag_int_val(fs, "from")) }
+        out_ok(api_get(fs, "/blocks" + q))
+        return
+    }
+    if cmd == "block" {
+        if len(rest) < 1 { out_fail("usage: greffe block <height>", 2) }
+        out_ok(api_get(fs, "/blocks/" + rest[0]))
+        return
+    }
+    if cmd == "entries" {
+        q := "?limit=" + str(flag_int_val(fs, "limit")) + "&kind=" + url_encode(flag_get(fs, "kind"))
+        if flag_int_val(fs, "from") >= 0 { q = q + "&from=" + str(flag_int_val(fs, "from")) }
+        out_ok(api_get(fs, "/entries" + q))
+        return
+    }
+    if cmd == "entry" {
+        if len(rest) < 1 { out_fail("usage: greffe entry <id>", 2) }
+        out_ok(api_get(fs, "/entries/" + rest[0]))
+        return
+    }
+    if cmd == "put" { cmd_put(fs, flag_get(fs, "kind"), flag_get(fs, "payload"))  return }
+    if cmd == "grant" || cmd == "revoke" {
+        if len(rest) < 2 { out_fail("usage: greffe " + cmd + " validator|member <pub>", 2) }
+        if rest[0] != "validator" && rest[0] != "member" { out_fail("role must be validator or member", 2) }
+        verb := "add"
+        if cmd == "revoke" { verb = "remove" }
+        cmd_put(fs, rest[0] + "." + verb, rest[1])
+        return
+    }
+    usage()
+}
+
+func usage() {
+    eprint("usage: greffe <command> [flags]")
+    eprint("commands: init | serve | status | peers | blocks | block <h> | entries | entry <id> | pending | put --kind K --payload P [--wait] | grant validator|member <pub> | revoke ... | verify | key | guide | version")
+    eprint("flags: --data DIR (env GREFFE_DATA) · --node URL · run `greffe <cmd> --help` for all flags")
+    exit(2)
+}
+
+func shift(argv, n) (out) {
+    out = []string{}
+    i := n
+    while i < len(argv) { out = append(out, argv[i])  i = i + 1 }
+}

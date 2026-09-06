@@ -1,0 +1,201 @@
+// greffe — chain core: entries, blocks, proof-of-authority rules, fork weight.
+//
+// A greffe chain is an append-only, transparent record for a federation of
+// associations. No money, no mining: blocks are sealed by VALIDATORS (the
+// association's servers) in Clique-style round-robin; anyone in the member set
+// may author entries. Fork choice = highest total weight (in-turn block = 2,
+// out-of-turn = 1), ties broken by the lowest tip hash.
+
+type Entry struct { id string  author string  ts int  kind string  payload string  sig string }
+
+type Block struct { height int  prev string  ts int  signer string  entries []Entry  hash string  sig string }
+
+type Config struct { name string  genesis_ts int  validators []string  members []string  peers []string  port int  block_interval int  sync_interval int }
+
+// Chain is the validated state: blocks + the sets derived from on-chain governance entries.
+type Chain struct { blocks []Block  validators []string  members []string  included map[string]bool  weight int }
+
+func is_in(list, s) (ok) {
+    ok = false
+    i := 0
+    while i < len(list) { if list[i] == s { ok = true }  i = i + 1 }
+}
+
+func add_unique(list, s) (out) {
+    out = list
+    if is_in(list, s) == false { out = append(out, s) }
+}
+
+func remove_item(list, s) (out) {
+    out = []string{}
+    i := 0
+    while i < len(list) { if list[i] != s { out = append(out, list[i]) }  i = i + 1 }
+}
+
+func index_of(list, s) (idx) {
+    idx = -1
+    i := 0
+    while i < len(list) { if list[i] == s { idx = i }  i = i + 1 }
+}
+
+func entry_id(author, ts, kind, payload) (id) {
+    id = sha256(author + "|" + str(ts) + "|" + kind + "|" + payload)
+}
+
+func entry_make(seedhex, kind, payload) (e) {
+    seed := from_hex(seedhex)
+    pub := to_hex(ed25519_pub(seed))
+    ts := now()
+    id := entry_id(pub, ts, kind, payload)
+    sig := to_hex(ed25519_sign(seed, bytes(id)))
+    e = Entry{id: id, author: pub, ts: ts, kind: kind, payload: payload, sig: sig}
+}
+
+func entry_valid(e) (ok) {
+    ok = false
+    if len(e.author) != 64 { return }
+    if len(e.sig) != 128 { return }
+    if len(e.kind) == 0 { return }
+    if e.id != entry_id(e.author, e.ts, e.kind, e.payload) { return }
+    ok = ed25519_verify(from_hex(e.author), bytes(e.id), from_hex(e.sig))
+}
+
+func is_gov_kind(kind) (ok) {
+    ok = kind == "validator.add" || kind == "validator.remove" || kind == "member.add" || kind == "member.remove"
+}
+
+// entry_allowed: governance entries need a validator author; everything else a validator or member.
+func entry_allowed(c, e) (ok) {
+    ok = false
+    if is_gov_kind(e.kind) {
+        if len(e.payload) != 64 { return }
+        ok = is_in(c.validators, e.author)
+        return
+    }
+    ok = is_in(c.validators, e.author) || is_in(c.members, e.author)
+}
+
+func chain_effect(c, e) (out) {
+    out = c
+    if e.kind == "validator.add" { out.validators = add_unique(out.validators, e.payload) }
+    if e.kind == "validator.remove" {
+        if len(out.validators) > 1 { out.validators = remove_item(out.validators, e.payload) }
+    }
+    if e.kind == "member.add" { out.members = add_unique(out.members, e.payload) }
+    if e.kind == "member.remove" { out.members = remove_item(out.members, e.payload) }
+}
+
+func block_hash(height, prev, ts, signer, entries) (h) {
+    ids := []string{}
+    i := 0
+    while i < len(entries) { ids = append(ids, entries[i].id)  i = i + 1 }
+    h = sha256(str(height) + "|" + prev + "|" + str(ts) + "|" + signer + "|" + join(ids, ","))
+}
+
+func genesis_hash(cfg) (h) {
+    h = sha256("greffe|genesis|" + cfg.name + "|" + str(cfg.genesis_ts) + "|" + join(cfg.validators, ","))
+}
+
+func genesis_block(cfg) (b) {
+    b = Block{height: 0, prev: "", ts: cfg.genesis_ts, signer: "", entries: []Entry{}, hash: genesis_hash(cfg), sig: ""}
+}
+
+func chain_new(cfg) (c) {
+    c = Chain{blocks: []Block{genesis_block(cfg)}, validators: sort(cfg.validators), members: cfg.members, included: make(map[string]bool), weight: 0}
+}
+
+func chain_tip(c) (b) { b = c.blocks[len(c.blocks) - 1] }
+
+// expected_signer: the in-turn validator for a height (validators kept sorted for determinism).
+func expected_signer(validators, height) (pub) {
+    pub = ""
+    sorted := sort(validators)
+    if len(sorted) > 0 { pub = sorted[height % len(sorted)] }
+}
+
+func block_weight(validators, b) (w) {
+    w = 1
+    if expected_signer(validators, b.height) == b.signer { w = 2 }
+}
+
+func block_seal(seedhex, prev, entries) (b) {
+    seed := from_hex(seedhex)
+    pub := to_hex(ed25519_pub(seed))
+    ts := now()
+    if ts < prev.ts { ts = prev.ts }
+    h := block_hash(prev.height + 1, prev.hash, ts, pub, entries)
+    sig := to_hex(ed25519_sign(seed, bytes(h)))
+    b = Block{height: prev.height + 1, prev: prev.hash, ts: ts, signer: pub, entries: entries, hash: h, sig: sig}
+}
+
+// chain_check validates b against the tip WITHOUT mutating c. err "" = valid.
+func chain_check(c, b) (err) {
+    err = ""
+    tip := chain_tip(c)
+    if b.height != tip.height + 1 { err = "height: expected " + str(tip.height + 1) + " got " + str(b.height)  return }
+    if b.prev != tip.hash { err = "prev hash does not match tip"  return }
+    if b.ts < tip.ts { err = "timestamp before parent"  return }
+    if b.hash != block_hash(b.height, b.prev, b.ts, b.signer, b.entries) { err = "hash mismatch"  return }
+    if is_in(c.validators, b.signer) == false { err = "signer is not a validator"  return }
+    if len(b.sig) != 128 { err = "bad signature length"  return }
+    if ed25519_verify(from_hex(b.signer), bytes(b.hash), from_hex(b.sig)) == false { err = "bad block signature"  return }
+    if len(b.entries) == 0 { err = "empty block"  return }
+    if len(b.entries) > 1000 { err = "too many entries"  return }
+    local := make(map[string]bool)
+    sim := c
+    i := 0
+    while i < len(b.entries) {
+        e := b.entries[i]
+        if entry_valid(e) == false { err = "invalid entry " + e.id  return }
+        if has(c.included, e.id) { err = "duplicate entry " + e.id  return }
+        if has(local, e.id) { err = "duplicate entry in block " + e.id  return }
+        if entry_allowed(sim, e) == false { err = "entry author not allowed " + e.id  return }
+        sim = chain_effect(sim, e)
+        local[e.id] = true
+        i = i + 1
+    }
+}
+
+// chain_apply appends b after chain_check passed. Mutates the included map (shared by value copies of c).
+func chain_apply(c, b) (out) {
+    out = c
+    i := 0
+    while i < len(b.entries) {
+        e := b.entries[i]
+        out = chain_effect(out, e)
+        out.included[e.id] = true
+        i = i + 1
+    }
+    out.weight = out.weight + block_weight(c.validators, b)
+    out.blocks = append(out.blocks, b)
+}
+
+// chain_rebuild replays blocks (index 0 must be a genesis matching cfg) into a fresh Chain.
+// Returns the chain, the number of blocks accepted, and the first error ("" if all applied).
+func chain_rebuild(cfg, blocks) (c, n, err) {
+    c = chain_new(cfg)
+    n = 0
+    err = ""
+    if len(blocks) == 0 { return }
+    if blocks[0].hash != c.blocks[0].hash { err = "genesis mismatch"  return }
+    n = 1
+    i := 1
+    while i < len(blocks) {
+        e := chain_check(c, blocks[i])
+        if len(e) > 0 { err = "block " + str(blocks[i].height) + ": " + e  return }
+        c = chain_apply(c, blocks[i])
+        n = n + 1
+        i = i + 1
+    }
+}
+
+// chain_better: does candidate win fork choice over current?
+func chain_better(cand, cur) (ok) {
+    ok = false
+    if cand.weight > cur.weight { ok = true  return }
+    if cand.weight == cur.weight {
+        ct := chain_tip(cand)
+        rt := chain_tip(cur)
+        if ct.hash != rt.hash && ct.hash < rt.hash { ok = true }
+    }
+}

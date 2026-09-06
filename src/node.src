@@ -1,0 +1,544 @@
+// greffe — the node: a single event loop owns all state (race-free by construction).
+// Goroutines only accept sockets, read requests, dial peers, and tick; every
+// result comes back to the loop as a string event over one channel:
+//   "tick" | "in\t<fd>\t<raw request>" | "re\t<peer addr>\t<raw reply>"
+//
+// Wire protocol, one TCP port for everything (default 7420):
+//   a request starting with "{" is a peer message: one JSON line in, one JSON line out;
+//   anything else is HTTP (the agent/human API, see http.src).
+// Peers are dialled directly (LAN / Tailscale / public IP). A member node behind
+// NAT still works: it dials the association's servers, they learn it from the
+// hello and pull from it while the connection is open.
+
+var g_evch = make(chan string)
+
+type Msg struct { t string  genesis string  height int  tip string  weight int  port int  from int  blocks []Block  entry Entry  block Block  err string }
+
+type Peer struct { addr string  height int  weight int  seen int  fails int  source string }
+
+type Node struct { cfg Config  datadir string  seedhex string  pub string  chain Chain  pending []Entry  pend_since map[string]int  pend_ids map[string]bool  peers []Peer  inflight map[string]bool  sync_from map[string]int  last_sync int  started int  sealed int  reorgs int }
+
+func logmsg(s) {
+    println(time_format_utc(now(), "%Y-%m-%dT%H:%M:%SZ") + " " + s)
+    flush()
+}
+
+// ---- goroutines (no shared state; everything travels over ch as strings) ----
+
+func gr_ticker(ch) { for { sleep(1000)  ch <- "tick" } }
+
+func gr_acceptor(srv, ch) {
+    for {
+        fd := accept(srv)
+        if fd >= 0 {
+            socket_timeout(fd, 4000)
+            go gr_reader(fd, ch)
+        }
+    }
+}
+
+func read_line_fd(fd) (raw) {
+    raw = ""
+    while index(raw, "\n") < 0 {
+        more := read(fd)
+        if len(more) == 0 { return }
+        raw = raw + more
+        if len(raw) > 8000000 { return }
+    }
+}
+
+// read_req reads a whole peer line or a whole HTTP request (headers + Content-Length body).
+func read_req(fd) (raw) {
+    raw = read(fd)
+    if len(raw) == 0 { return }
+    if has_prefix(raw, "{") {
+        while index(raw, "\n") < 0 {
+            more := read(fd)
+            if len(more) == 0 { return }
+            raw = raw + more
+            if len(raw) > 8000000 { return }
+        }
+        return
+    }
+    while index(raw, "\r\n\r\n") < 0 {
+        more2 := read(fd)
+        if len(more2) == 0 { return }
+        raw = raw + more2
+        if len(raw) > 65536 { return }
+    }
+    hend := index(raw, "\r\n\r\n") + 4
+    clen := content_length(substr(raw, 0, hend))
+    if clen > 1000000 { raw = ""  return }
+    while len(raw) - hend < clen {
+        more3 := read(fd)
+        if len(more3) == 0 { return }
+        raw = raw + more3
+    }
+}
+
+func gr_reader(fd, ch) {
+    raw := read_req(fd)
+    ch <- "in\t" + str(fd) + "\t" + raw
+}
+
+func split_addr(addr) (host, port) {
+    host = addr
+    port = 7420
+    c := index(addr, ":")
+    if c >= 0 {
+        host = substr(addr, 0, c)
+        port = parse_int(substr(addr, c + 1, len(addr)))
+    }
+}
+
+// gr_fetch: request/reply to a peer; the reply (or "" on failure) comes back as an event.
+func gr_fetch(addr, line, ch) {
+    reply := ""
+    host, port := split_addr(addr)
+    fd := dial(host, port)
+    if fd >= 0 {
+        socket_timeout(fd, 4000)
+        write(fd, line + "\n")
+        reply = read_line_fd(fd)
+        close(fd)
+    }
+    ch <- "re\t" + addr + "\t" + reply
+}
+
+// gr_announce: fire-and-forget push (a new entry or block); no event comes back.
+func gr_announce(addr, line) {
+    host, port := split_addr(addr)
+    fd := dial(host, port)
+    if fd >= 0 {
+        socket_timeout(fd, 4000)
+        write(fd, line + "\n")
+        read_line_fd(fd)
+        close(fd)
+    }
+}
+
+// ---- node state ----
+
+func node_load(dir) (n, err) {
+    err = ""
+    cfg, ok := store_load_config(dir)
+    if ok == false { err = "no valid config in " + dir + " (run: greffe init)"  return }
+    seedhex := store_load_seed(dir)
+    if len(seedhex) != 64 { err = "missing or bad node.key in " + dir  return }
+    pub := to_hex(ed25519_pub(from_hex(seedhex)))
+    blocks := store_load_blocks(dir)
+    chain, applied, cerr := chain_rebuild(cfg, blocks)
+    if len(cerr) > 0 { err = "chain.jsonl: " + cerr  return }
+    if len(blocks) == 0 { store_rewrite_blocks(dir, chain.blocks) }
+    n = Node{cfg: cfg, datadir: dir, seedhex: seedhex, pub: pub, chain: chain, pending: []Entry{}, pend_since: make(map[string]int), pend_ids: make(map[string]bool), peers: []Peer{}, inflight: make(map[string]bool), sync_from: make(map[string]int), last_sync: 0, started: now(), sealed: 0, reorgs: 0}
+    i := 0
+    while i < len(cfg.peers) { n = peer_learn(n, cfg.peers[i], "config")  i = i + 1 }
+    learned := store_load_peers(dir)
+    k := 0
+    while k < len(learned) { n = peer_learn(n, learned[k], "learned")  k = k + 1 }
+    saved := store_load_pending(dir)
+    j := 0
+    while j < len(saved) { n = pending_add(n, saved[j])  j = j + 1 }
+    logmsg("loaded " + str(applied) + " blocks, weight " + str(chain.weight) + ", " + str(len(n.pending)) + " pending, " + str(len(n.peers)) + " peers")
+}
+
+func node_is_validator(n) (ok) { ok = is_in(n.chain.validators, n.pub) }
+
+func peer_index(n, addr) (idx) {
+    idx = -1
+    i := 0
+    while i < len(n.peers) { if n.peers[i].addr == addr { idx = i }  i = i + 1 }
+}
+
+func peer_learn(n, addr, source) (out) {
+    out = n
+    if len(addr) == 0 { return }
+    if peer_index(out, addr) >= 0 { return }
+    if len(out.peers) >= 64 { return }
+    out.peers = append(out.peers, Peer{addr: addr, height: -1, weight: -1, seen: 0, fails: 0, source: source})
+    if source == "hello" {
+        // remember peers that found us, so a restart still knows the federation
+        learned := []string{}
+        i := 0
+        while i < len(out.peers) { if out.peers[i].source != "config" { learned = append(learned, out.peers[i].addr) }  i = i + 1 }
+        store_save_peers(out.datadir, learned)
+    }
+}
+
+func peer_mark(n, addr, height, weight, ok) (out) {
+    out = n
+    idx := peer_index(out, addr)
+    if idx < 0 { return }
+    if ok {
+        out.peers[idx].height = height
+        out.peers[idx].weight = weight
+        out.peers[idx].seen = now()
+        out.peers[idx].fails = 0
+    } else {
+        out.peers[idx].fails = out.peers[idx].fails + 1
+    }
+}
+
+// pending_add: validate + queue an entry. Returns (node, accepted, reason).
+func pending_accept(n, e) (out, ok, reason) {
+    out = n
+    ok = false
+    reason = ""
+    if entry_valid(e) == false { reason = "invalid entry (id or signature)"  return }
+    if has(out.chain.included, e.id) { reason = "already in chain"  return }
+    if has(out.pend_ids, e.id) { reason = "already pending"  return }
+    if entry_allowed(out.chain, e) == false { reason = "author is not a validator or member"  return }
+    if len(out.pending) >= 10000 { reason = "pending queue full"  return }
+    out = pending_add(out, e)
+    ok = true
+}
+
+func pending_add(n, e) (out) {
+    out = n
+    if has(out.pend_ids, e.id) { return }
+    out.pending = append(out.pending, e)
+    out.pend_ids[e.id] = true
+    out.pend_since[e.id] = now()
+}
+
+// pending_prune drops entries now included in the chain.
+func pending_prune(n) (out) {
+    out = n
+    keep := []Entry{}
+    i := 0
+    while i < len(out.pending) {
+        e := out.pending[i]
+        if has(out.chain.included, e.id) {
+            delete(out.pend_ids, e.id)
+            delete(out.pend_since, e.id)
+        } else {
+            keep = append(keep, e)
+        }
+        i = i + 1
+    }
+    out.pending = keep
+}
+
+func hello_line(n) (s) {
+    tip := chain_tip(n.chain)
+    s = json(Msg{t: "hello", genesis: n.chain.blocks[0].hash, height: tip.height, tip: tip.hash, weight: n.chain.weight, port: n.cfg.port, from: 0, blocks: []Block{}, entry: Entry{}, block: Block{}, err: ""})
+}
+
+func msg_ok(err) (s) { s = json(Msg{t: "ok", genesis: "", height: 0, tip: "", weight: 0, port: 0, from: 0, blocks: []Block{}, entry: Entry{}, block: Block{}, err: err}) }
+
+func blocks_from(n, from, limit) (bs) {
+    bs = []Block{}
+    i := from
+    if i < 0 { i = 0 }
+    while i < len(n.chain.blocks) && len(bs) < limit { bs = append(bs, n.chain.blocks[i])  i = i + 1 }
+}
+
+// ---- outbound ----
+
+func node_send(n, addr, line) (out) {
+    out = n
+    if has(out.inflight, addr) && out.inflight[addr] { return }
+    out.inflight[addr] = true
+    go gr_fetch(addr, line, g_evch)
+}
+
+func node_broadcast(n, line) {
+    i := 0
+    while i < len(n.peers) {
+        p := n.peers[i]
+        if p.fails < 20 || p.source == "config" { go gr_announce(p.addr, line) }
+        i = i + 1
+    }
+}
+
+// want_sync: ask addr for blocks starting at our tip height (it includes the block at that height
+// so we can confirm it is a common ancestor).
+func want_sync(n, addr, from) (out) {
+    out = n
+    if from < 0 { from = 0 }
+    out.sync_from[addr] = from
+    out = node_send(out, addr, json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: from, blocks: []Block{}, entry: Entry{}, block: Block{}, err: ""}))
+}
+
+// ---- applying blocks ----
+
+func node_append(n, b, source) (out, err) {
+    out = n
+    err = chain_check(out.chain, b)
+    if len(err) > 0 { return }
+    out.chain = chain_apply(out.chain, b)
+    store_append_block(out.datadir, b)
+    out = pending_prune(out)
+    store_save_pending(out.datadir, out.pending)
+    logmsg("block " + str(b.height) + " " + substr(b.hash, 0, 12) + " (" + str(len(b.entries)) + " entries, weight " + str(out.chain.weight) + ") from " + source)
+}
+
+// node_adopt replaces the chain with cand (already rebuilt/validated) if fork choice prefers it.
+func node_adopt(n, cand, source) (out, changed) {
+    out = n
+    changed = false
+    if chain_better(cand, out.chain) == false { return }
+    old := out.chain
+    out.chain = cand
+    out.reorgs = out.reorgs + 1
+    store_rewrite_blocks(out.datadir, cand.blocks)
+    // entries orphaned by the reorg go back to pending
+    i := 1
+    while i < len(old.blocks) {
+        es := old.blocks[i].entries
+        j := 0
+        while j < len(es) {
+            if has(cand.included, es[j].id) == false { out = pending_add(out, es[j]) }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    out = pending_prune(out)
+    store_save_pending(out.datadir, out.pending)
+    changed = true
+    logmsg("adopted chain height " + str(chain_tip(cand).height) + " weight " + str(cand.weight) + " (was " + str(chain_tip(old).height) + "/" + str(old.weight) + ") from " + source)
+}
+
+// on_blocks: a page of blocks from addr, starting at the height we asked for.
+func on_blocks(n, addr, bs) (out) {
+    out = n
+    asked := out.sync_from[addr]
+    delete(out.sync_from, addr)
+    if len(bs) == 0 { return }
+    first := bs[0]
+    if first.height != asked { return }
+    if first.height >= len(out.chain.blocks) { return }
+    if out.chain.blocks[first.height].hash != first.hash {
+        // not a common ancestor yet: walk back (genesis always matches)
+        if first.height > 0 { out = want_sync(out, addr, first.height - 1) }
+        return
+    }
+    // fast path: extends our tip
+    tip := chain_tip(out.chain)
+    if first.height == tip.height {
+        i := 1
+        while i < len(bs) {
+            o, err := node_append(out, bs[i], addr)
+            if len(err) > 0 { logmsg("reject block " + str(bs[i].height) + " from " + addr + ": " + err)  return }
+            out = o
+            i = i + 1
+        }
+    } else {
+        cand := []Block{}
+        k := 0
+        while k <= first.height { cand = append(cand, out.chain.blocks[k])  k = k + 1 }
+        m := 1
+        while m < len(bs) { cand = append(cand, bs[m])  m = m + 1 }
+        c, applied, err2 := chain_rebuild(out.cfg, cand)
+        if len(err2) > 0 { logmsg("reject fork from " + addr + ": " + err2)  return }
+        o2, changed := node_adopt(out, c, addr)
+        out = o2
+        if changed == false { return }
+    }
+    // a full page means there may be more
+    if len(bs) >= 100 { out = want_sync(out, addr, chain_tip(out.chain).height) }
+}
+
+func on_hello(n, addr, m) (out) {
+    out = n
+    if m.genesis != out.chain.blocks[0].hash { out = peer_mark(out, addr, m.height, m.weight, false)  return }
+    out = peer_mark(out, addr, m.height, m.weight, true)
+    if m.weight > out.chain.weight {
+        out = want_sync(out, addr, chain_tip(out.chain).height)
+    } else if m.weight == out.chain.weight && m.tip != chain_tip(out.chain).hash && m.tip < chain_tip(out.chain).hash {
+        out = want_sync(out, addr, chain_tip(out.chain).height)
+    }
+}
+
+func on_block_announce(n, addr, b) (out) {
+    out = n
+    tip := chain_tip(out.chain)
+    if b.height == tip.height + 1 && b.prev == tip.hash {
+        o, err := node_append(out, b, addr)
+        if len(err) > 0 { logmsg("reject announced block " + str(b.height) + ": " + err)  return }
+        out = o
+        node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: 0, blocks: []Block{}, entry: Entry{}, block: b, err: ""}))
+        return
+    }
+    if b.hash == tip.hash { return }
+    if len(addr) > 0 { out = want_sync(out, addr, tip.height) }
+}
+
+// ---- inbound peer messages ----
+
+func handle_p2p(n, raw, remote_ip) (out, resp) {
+    out = n
+    m := parse(raw, Msg{})
+    addr := ""
+    if m.port > 0 && len(remote_ip) > 0 {
+        addr = remote_ip + ":" + str(m.port)
+        out = peer_learn(out, addr, "hello")
+    }
+    if m.t == "hello" {
+        out = on_hello(out, addr, m)
+        resp = hello_line(out)
+        return
+    }
+    if m.genesis != out.chain.blocks[0].hash { resp = msg_ok("genesis mismatch")  return }
+    if m.t == "blocks" {
+        resp = json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: m.from, blocks: blocks_from(out, m.from, 100), entry: Entry{}, block: Block{}, err: ""})
+        return
+    }
+    if m.t == "entry" {
+        o, ok, reason := pending_accept(out, m.entry)
+        out = o
+        if ok {
+            store_save_pending(out.datadir, out.pending)
+            node_broadcast(out, raw)
+            resp = msg_ok("")
+        } else {
+            resp = msg_ok(reason)
+        }
+        return
+    }
+    if m.t == "block" {
+        out = on_block_announce(out, addr, m.block)
+        resp = msg_ok("")
+        return
+    }
+    resp = msg_ok("unknown message type")
+}
+
+func on_reply(n, addr, raw) (out) {
+    out = n
+    out.inflight[addr] = false
+    if len(raw) == 0 {
+        out = peer_mark(out, addr, 0, 0, false)
+        delete(out.sync_from, addr)
+        return
+    }
+    m := parse(raw, Msg{})
+    if m.t == "hello" { out = on_hello(out, addr, m)  return }
+    if m.t == "blocks" { out = on_blocks(out, addr, m.blocks)  return }
+}
+
+// ---- sealing (proof of authority, Clique-style) ----
+
+func try_seal(n) (out) {
+    out = n
+    if node_is_validator(out) == false { return }
+    if len(out.pending) == 0 { return }
+    tip := chain_tip(out.chain)
+    sorted := sort(out.chain.validators)
+    nv := len(sorted)
+    h := tip.height + 1
+    expidx := h % nv
+    myidx := index_of(sorted, out.pub)
+    k := (myidx - expidx + nv) % nv
+    oldest := now()
+    i := 0
+    while i < len(out.pending) {
+        s := out.pend_since[out.pending[i].id]
+        if s < oldest { oldest = s }
+        i = i + 1
+    }
+    age := now() - oldest
+    need := 1 + k * out.cfg.block_interval
+    if age < need { return }
+    if now() - tip.ts < 1 { return }
+    batch := []Entry{}
+    j := 0
+    while j < len(out.pending) && len(batch) < 500 { batch = append(batch, out.pending[j])  j = j + 1 }
+    b := block_seal(out.seedhex, tip, batch)
+    o, err := node_append(out, b, "seal")
+    if len(err) > 0 {
+        // some pending entry is no longer valid (e.g. author revoked): drop the batch head that fails
+        logmsg("seal rejected: " + err + "; dropping stale pending entries")
+        out = drop_invalid_pending(out)
+        return
+    }
+    out = o
+    out.sealed = out.sealed + 1
+    node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: 0, blocks: []Block{}, entry: Entry{}, block: b, err: ""}))
+}
+
+func drop_invalid_pending(n) (out) {
+    out = n
+    keep := []Entry{}
+    i := 0
+    while i < len(out.pending) {
+        e := out.pending[i]
+        if entry_valid(e) && entry_allowed(out.chain, e) && has(out.chain.included, e.id) == false {
+            keep = append(keep, e)
+        } else {
+            delete(out.pend_ids, e.id)
+            delete(out.pend_since, e.id)
+        }
+        i = i + 1
+    }
+    out.pending = keep
+    store_save_pending(out.datadir, out.pending)
+}
+
+func on_tick(n) (out) {
+    out = n
+    t := now()
+    if t - out.last_sync >= out.cfg.sync_interval {
+        out.last_sync = t
+        line := hello_line(out)
+        i := 0
+        while i < len(out.peers) {
+            p := out.peers[i]
+            // back off dead peers: every 6th round after 5 failures
+            if p.fails < 5 || (t / out.cfg.sync_interval) % 6 == 0 { out = node_send(out, p.addr, line) }
+            i = i + 1
+        }
+    }
+    out = try_seal(out)
+}
+
+// ---- event loop ----
+
+func ev_parse(ev) (kind, a, rest) {
+    kind = ev
+    a = ""
+    rest = ""
+    t1 := index(ev, "\t")
+    if t1 < 0 { return }
+    kind = substr(ev, 0, t1)
+    r := substr(ev, t1 + 1, len(ev))
+    t2 := index(r, "\t")
+    if t2 < 0 { a = r  return }
+    a = substr(r, 0, t2)
+    rest = substr(r, t2 + 1, len(r))
+}
+
+func on_in(n, fd, raw) (out) {
+    out = n
+    if len(raw) == 0 { close(fd)  return }
+    if has_prefix(raw, "{") {
+        o, resp := handle_p2p(out, raw, peer_addr(fd))
+        out = o
+        write(fd, resp + "\n")
+        close(fd)
+        return
+    }
+    o2, res := handle_http(out, parse_request(raw))
+    out = o2
+    write(fd, res)
+    close(fd)
+}
+
+func node_serve(n) {
+    ch := g_evch
+    srv := listen(n.cfg.port)
+    if srv < 0 { out_fail("cannot bind port " + str(n.cfg.port), 1) }
+    go gr_acceptor(srv, ch)
+    go gr_ticker(ch)
+    role := "full node"
+    if node_is_validator(n) { role = "validator" }
+    logmsg("greffe " + greffe_version() + " '" + n.cfg.name + "' " + role + " " + substr(n.pub, 0, 12) + " listening on :" + str(n.cfg.port) + " height " + str(chain_tip(n.chain).height))
+    n.last_sync = now() - n.cfg.sync_interval
+    for {
+        ev := <-ch
+        kind, a, rest := ev_parse(ev)
+        if kind == "tick" { n = on_tick(n) }
+        if kind == "in" { n = on_in(n, parse_int(a), rest) }
+        if kind == "re" { n = on_reply(n, a, rest) }
+    }
+}

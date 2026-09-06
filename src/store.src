@@ -1,0 +1,100 @@
+// greffe — on-disk state: config.json, node.key, chain.jsonl (one block per line), pending.jsonl.
+
+func store_config_path(dir) (p) { p = dir + "/config.json" }
+func store_key_path(dir) (p) { p = dir + "/node.key" }
+func store_chain_path(dir) (p) { p = dir + "/chain.jsonl" }
+func store_pending_path(dir) (p) { p = dir + "/pending.jsonl" }
+
+func store_load_config(dir) (cfg, ok) {
+    ok = false
+    raw := read_file(store_config_path(dir))
+    if len(raw) == 0 { return }
+    cfg = parse(raw, Config{})
+    if cfg.port == 0 { cfg.port = 7420 }
+    if cfg.block_interval == 0 { cfg.block_interval = 5 }
+    if cfg.sync_interval == 0 { cfg.sync_interval = 10 }
+    ok = len(cfg.name) > 0 && len(cfg.validators) > 0
+}
+
+func store_save_config(dir, cfg) (ok) {
+    ok = write_file(store_config_path(dir), json(cfg)) >= 0
+}
+
+func store_load_seed(dir) (seedhex) {
+    seedhex = trim(read_file(store_key_path(dir)))
+}
+
+func store_save_seed(dir, seedhex) (ok) {
+    p := store_key_path(dir)
+    ok = write_file(p, seedhex + "\n") >= 0
+    system("chmod 600 " + p)
+}
+
+// store_load_blocks reads chain.jsonl (may be absent -> empty).
+func store_load_blocks(dir) (blocks) {
+    blocks = []Block{}
+    raw := read_file(store_chain_path(dir))
+    if len(raw) == 0 { return }
+    lines := split(raw, "\n")
+    i := 0
+    while i < len(lines) {
+        line := trim(lines[i])
+        if len(line) > 0 { blocks = append(blocks, parse(line, Block{})) }
+        i = i + 1
+    }
+}
+
+// store_append_block appends one block line durably (write -> fsync file -> fsync dir).
+func store_append_block(dir, b) (ok) {
+    p := store_chain_path(dir)
+    off := file_size(p)
+    if off < 0 { off = 0 }
+    ok = write_file_at(p, off, bytes(json(b) + "\n")) >= 0
+    fsync(p)
+    fsync(dir)
+}
+
+// store_rewrite_blocks replaces chain.jsonl (after a reorg).
+func store_rewrite_blocks(dir, blocks) (ok) {
+    lines := []string{}
+    i := 0
+    while i < len(blocks) { lines = append(lines, json(blocks[i]))  i = i + 1 }
+    p := store_chain_path(dir)
+    ok = write_file(p, join(lines, "\n") + "\n") >= 0
+    fsync(p)
+    fsync(dir)
+}
+
+func store_load_pending(dir) (entries) {
+    entries = []Entry{}
+    raw := read_file(store_pending_path(dir))
+    if len(raw) == 0 { return }
+    lines := split(raw, "\n")
+    i := 0
+    while i < len(lines) {
+        line := trim(lines[i])
+        if len(line) > 0 { entries = append(entries, parse(line, Entry{})) }
+        i = i + 1
+    }
+}
+
+func store_save_pending(dir, entries) (ok) {
+    lines := []string{}
+    i := 0
+    while i < len(entries) { lines = append(lines, json(entries[i]))  i = i + 1 }
+    body := ""
+    if len(lines) > 0 { body = join(lines, "\n") + "\n" }
+    ok = write_file(store_pending_path(dir), body) >= 0
+}
+
+func store_peers_path(dir) (p) { p = dir + "/peers.json" }
+
+func store_load_peers(dir) (addrs) {
+    addrs = []string{}
+    raw := read_file(store_peers_path(dir))
+    if len(raw) > 0 { addrs = parse(raw, []string{}) }
+}
+
+func store_save_peers(dir, addrs) (ok) {
+    ok = write_file(store_peers_path(dir), json(addrs)) >= 0
+}
