@@ -1,12 +1,16 @@
 # greffe
 
-A lightweight, transparent, append-only registry for a federation of associations,
-written in [machin](https://github.com/javimosch/machin) (MFL). One static binary
-(~5 MB), ~5 MB resident memory, one TCP port, no database, no mining, no money.
+**A lightweight blockchain for associations, cooperatives and collectives — any group
+where transparency matters and nobody should be able to quietly rewrite the record.**
 
-*Greffe* is the French registry where associations are declared. This one is shared:
-the association's servers seal it, every member association can add its own machine
-as an extra node, and anyone can re-verify the whole record from genesis.
+Written in [machin](https://github.com/javimosch/machin) (MFL): one static binary (~5 MB),
+~5 MB resident memory, one TCP port, no database. It keeps what a blockchain is for — an
+append-only, signed, hash-chained record replicated on every member's machine and
+verifiable by anyone from genesis — and drops what makes blockchains expensive: no money,
+no mining, no staking, no global network. The group's own servers seal blocks; any member
+can add a machine as an extra node.
+
+See [docs/VISION.md](docs/VISION.md) for the north star and principles.
 
 ## Model
 
@@ -62,6 +66,12 @@ Every command prints JSON; `greffe guide` or `GET /` explains the HTTP API
 
 `~/.greffe/` (or `--data`, or `$GREFFE_DATA`): `node.key` (Ed25519 seed, 0600),
 `config.json`, `chain.jsonl` (one block per line, fsync'd), `pending.jsonl`, `peers.json`.
+
+## Name
+
+*Greffe* is the registry office where associations are declared in some countries; the name
+points at that role — a public office of record — not at a place. greffe is for any group,
+anywhere.
 
 ## Status
 
