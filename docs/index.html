@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>greffe — a transparent registry for a federation of associations</title>
+<meta name="description" content="greffe: a lightweight proof-of-authority, append-only registry for a federation of associations. One static binary in machin, no mining, no money, ~5 MB idle.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231f3a2e'/><path d='M8 10h16M8 16h16M8 22h10' stroke='%23e8dcc2' stroke-width='3' stroke-linecap='round'/></svg>">
+<style>
+  :root{--ink:#1c1a17;--muted:#5f5a52;--paper:#f7f3ea;--card:#fffdf8;--line:#e2d9c6;--green:#1f3a2e;--green-2:#2f5a45;--accent:#b8541f;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  @media (prefers-color-scheme:dark){:root{--ink:#ece6d8;--muted:#a9a195;--paper:#15171a;--card:#1d2024;--line:#2e3238;--green:#8fc5a6;--green-2:#6fa88a;--accent:#e08a5a}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.6 Georgia,"Iowan Old Style","Palatino Linotype",serif}
+  a{color:var(--green-2)}
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px}
+  header{padding:64px 0 40px;border-bottom:1px solid var(--line)}
+  .kicker{font:600 12px/1 system-ui,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:clamp(40px,7vw,64px);line-height:1.02;margin:14px 0 18px;letter-spacing:-.02em;color:var(--green)}
+  .lede{font-size:21px;max-width:720px;color:var(--ink)}
+  .lede em{font-style:italic;color:var(--muted)}
+  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px;font-family:system-ui,sans-serif;font-size:15px}
+  .btn{padding:10px 16px;border-radius:8px;border:1px solid var(--green);text-decoration:none;color:var(--green);font-weight:600}
+  .btn.primary{background:var(--green);color:var(--paper)}
+  @media (prefers-color-scheme:dark){.btn.primary{color:#0e1512}}
+  section{padding:44px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:26px;margin:0 0 14px;letter-spacing:-.01em;color:var(--green)}
+  h3{font:600 15px/1.3 system-ui,sans-serif;margin:0 0 6px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  p{margin:0 0 14px;max-width:720px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .card p{margin:0;font-size:15px;color:var(--ink)}
+  pre{background:#14201a;color:#e8dcc2;border-radius:10px;padding:16px 18px;overflow-x:auto;font:13.5px/1.55 var(--mono);margin:14px 0}
+  code{font-family:var(--mono);font-size:.92em;background:var(--card);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  pre code{background:none;border:0;padding:0}
+  .num{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:16px}
+  .num div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .num b{display:block;font:600 30px/1 system-ui,sans-serif;color:var(--green);margin-bottom:6px;letter-spacing:-.02em}
+  .num span{font:13px/1.4 system-ui,sans-serif;color:var(--muted)}
+  table{border-collapse:collapse;width:100%;font:14px/1.5 system-ui,sans-serif;margin-top:10px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600}
+  .diagram{font:13px/1.5 var(--mono);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;overflow-x:auto;white-space:pre;color:var(--ink)}
+  footer{padding:36px 0 60px;color:var(--muted);font:14px/1.6 system-ui,sans-serif}
+  ul{max-width:720px;padding-left:22px}li{margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">machin · proof of authority · no money</div>
+  <h1>greffe</h1>
+  <p class="lede">A transparent, append-only registry that a federation of associations can run together — on the servers the association already has, plus any member's machine. <em>Greffe</em> is the French registry where associations are declared. This one is shared, signed, and verifiable by anyone from genesis.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/javimosch/greffe">Source on GitHub</a>
+    <a class="btn" href="#quickstart">Quick start</a>
+    <a class="btn" href="llms.txt">llms.txt</a>
+  </div>
+</header>
+
+<section>
+  <h2>What it is, in numbers</h2>
+  <div class="num">
+    <div><b>5 MB</b><span>resident memory of an idle node or relay (static binary, 5.3 MB on disk)</span></div>
+    <div><b>1</b><span>TCP port for peers and the HTTP API — nothing else to open</span></div>
+    <div><b>0</b><span>tokens, mining, or empty blocks. An idle federation costs nothing</span></div>
+    <div><b>4</b><span>live nodes in the reference deployment: two NAT'd validators, two public relays</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>The model</h2>
+  <div class="grid">
+    <div class="card"><h3>Entries</h3><p>Signed records <code>{id, author, ts, kind, payload, sig}</code>. <code>kind</code> is free text (a decision, a tool release, a grant); <code>payload</code> is any text, JSON encouraged. The id is a hash of the content, the signature is Ed25519 over the id.</p></div>
+    <div class="card"><h3>Blocks</h3><p>Validators — the association's servers — seal blocks in Clique-style round-robin. The in-turn validator seals immediately; the others wait <code>block_interval × distance</code>, so an offline server never stalls the chain.</p></div>
+    <div class="card"><h3>Fork choice</h3><p>Highest total weight wins (in-turn block = 2, out-of-turn = 1), ties by lowest tip hash. Deterministic, so nodes converge without talking to everyone.</p></div>
+    <div class="card"><h3>Governance on-chain</h3><p><code>validator.add / remove</code> and <code>member.add / remove</code> are ordinary entries signed by a validator. Genesis fixes only the name, a timestamp and the first validators; everything after is in the record itself.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Relays without a single point of failure</h2>
+  <p>A chain does not need a connection forwarder. Every block and entry is signed, so <em>any public full node is a meeting point</em>: a node behind NAT pushes what it has and pulls what it lacks. A relay holds no key, cannot forge anything, and can only withhold — which several relays defeat with no coordination, because fork choice reconciles them.</p>
+  <div class="diagram">  laptop (NAT, validator) ──┐                          ┌── LXC container (NAT, validator)
+                            │ subscribe + dial          │
+                            ▼                           ▼
+                     relay vps1  ◄──── sync ────►  relay mikavm3
+                     (public, no key)              (public, no key)
+
+  a write on either validator reaches the other through whichever relay is alive;
+  if both relays are down, validators keep sealing and reconcile when one returns.</div>
+  <ul>
+    <li><b>NAT'd node</b>: <code>greffe init --nat --peers relay1:7420,relay2:7420</code>. It advertises no port, keeps one long-lived subscription per relay for pushed blocks and entries, and syncs over its own outbound dials.</li>
+    <li><b>Relay</b>: <code>greffe init --relay --genesis '…'</code> on a public host. Accepts up to 256 subscribers, pings them every 30 s.</li>
+    <li><b>Forks behind NAT</b> are assembled from a side-block buffer on the receiver; the sender finds the common ancestor and pushes or pulls.</li>
+  </ul>
+</section>
+
+<section id="quickstart">
+  <h2>Quick start</h2>
+  <pre><code>./build.sh                     # needs machin; STATIC=1 ./build.sh for a portable binary
+greffe init --name my-federation --port 7420     # first validator, keys in ~/.greffe
+greffe serve                                     # or the systemd unit in deploy/
+
+# a second machine that can reach the first one
+greffe init --join http://first-node:7420 &amp;&amp; greffe serve
+
+# a public relay, and a machine behind NAT, from the published genesis
+greffe genesis                                   # -> {"name","genesis_ts","validators","hash"}
+greffe init --relay --genesis '&lt;json&gt;' --port 7420 --peers other-relay:7420
+greffe init --nat   --genesis '&lt;json&gt;' --peers relay1:7420,relay2:7420
+
+# then, from any node whose key is a validator or member
+greffe grant member &lt;pub&gt;                        # governance = a signed entry
+greffe put --kind decision --payload '{"title":"adopt greffe"}' --wait
+greffe entries --kind decision
+greffe verify                                    # exit 0 ok / 90 broken</code></pre>
+  <p>Every command prints JSON. <code>greffe guide</code> or <code>GET /</code> on a node describes the HTTP API: <code>/status /peers /blocks /entries /pending /verify</code> and <code>POST /entries</code>.</p>
+</section>
+
+<section>
+  <h2>Gentle on the machines it runs on</h2>
+  <p>machin keeps a per-goroutine arena, which means a long-running single-actor loop must manage its own memory. greffe holds blocks as raw JSON lines plus small headers, parses entries on demand inside scoped arenas, and resets its arena when resident memory grows, rebuilding state from disk. The benchmark that found the original leak is in the repo.</p>
+  <table>
+    <tr><th>Scenario (2,000 writes, 20 parallel writers)</th><th>Before</th><th>After</th></tr>
+    <tr><td>Two validators, direct</td><td>1.6 GB per node</td><td>peak 56–72 MB, settles ~20 MB</td></tr>
+    <tr><td>Two NAT'd validators through a relay</td><td>—</td><td>relay peak 35 MB, resets to 15 MB</td></tr>
+    <tr><td>300 live writes across the public internet</td><td>—</td><td>relays peak 27 MB, settle 6.5 MB</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>What is verified, and what is not</h2>
+  <p><code>test.sh</code> covers sealing, sync, the membership gate, grants, two-validator round-robin, partition catch-up and restart persistence. <code>test-relay.sh</code> covers subscriptions, relay failover, a no-relay hold, relay recovery and fork convergence through relays. <code>machin check</code> reports zero data-race diagnostics: one event loop owns all state.</p>
+  <p>Not yet: TLS between peers (use Tailscale or WireGuard), per-IP rate limits on public relays, per-author quotas, pruning of old blocks from memory.</p>
+</section>
+
+<footer>
+  MIT · built in <a href="https://github.com/javimosch/machin">machin</a> (MFL) · <a href="https://github.com/javimosch/greffe">github.com/javimosch/greffe</a>
+</footer>
+</div>
+</body>
+</html>

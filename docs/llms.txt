@@ -1,0 +1,10 @@
+# greffe
+
+> A transparent, append-only registry for a federation of associations. One static binary in machin (MFL), proof-of-authority (no mining, no money), ~5 MB idle, one TCP port for peers and HTTP.
+
+- Repo: https://github.com/javimosch/greffe
+- Install: build with `./build.sh` (needs machin) or `STATIC=1 ./build.sh` for a portable Linux x86_64 binary.
+- Model: signed entries {id, author, ts, kind, payload, sig}; blocks sealed by validators in Clique-style round-robin; governance on-chain (validator.add/remove, member.add/remove).
+- Relays: any public full node (`greffe init --relay`) is a meeting point for NAT'd nodes (`greffe init --nat --peers r1:7420,r2:7420`); relays hold no key power.
+- HTTP API: GET /status /peers /blocks /blocks/N /entries /entries/<id> /pending /verify /health; POST /entries. GET / returns this guide.
+- CLI: init | serve | status | put --kind K --payload P [--wait] | entries | entry <id> | grant validator|member <pub> | revoke | verify | key | genesis | guide. JSON out, exit 0 ok / 1 error / 2 usage / 90 verify failed.
