@@ -1,14 +1,15 @@
 // greffe — the node: a single event loop owns all state (race-free by construction).
-// Goroutines only accept sockets, read requests, dial peers, and tick; every
-// result comes back to the loop as a string event over one channel:
-//   "tick" | "in\t<fd>\t<raw request>" | "re\t<peer addr>\t<raw reply>"
+// Goroutines only accept sockets, read requests, dial peers, hold subscriptions and
+// tick; every result comes back to the loop as a string event over one channel:
+//   "tick" | "in\t<fd>\t<raw request>" | "re\t<peer>\t<raw reply>" | "push\t<peer>\t<line>" | "subend\t<peer>\t"
 //
 // Wire protocol, one TCP port for everything (default 7420):
-//   a request starting with "{" is a peer message: one JSON line in, one JSON line out;
-//   anything else is HTTP (the agent/human API, see http.src).
-// Peers are dialled directly (LAN / Tailscale / public IP). A member node behind
-// NAT still works: it dials the association's servers, they learn it from the
-// hello and pull from it while the connection is open.
+//   a request starting with "{" is a peer message: one JSON line in, one JSON line out
+//   ("sub" keeps the socket open and streams announcements); anything else is HTTP.
+// Peers are dialled directly (LAN / Tailscale / public IP). A node behind NAT sets
+// nat=true: it advertises no port, subscribes to its peers (relays) for pushes, and
+// pulls/pushes over its own outbound dials. Any public full node is a relay; it holds
+// no key power, so several relays need no coordination — fork choice reconciles them.
 
 var g_evch = make(chan string)
 
@@ -21,11 +22,35 @@ var g_subfds = make(map[int]int)
 var g_sub = make(map[int]int)
 var g_sub_ts = make(map[int]int)
 
-type Msg struct { t string  genesis string  height int  tip string  weight int  port int  nat int  from int  npending int  blocks []Block  entries []Entry  entry Entry  block Block  err string }
+// Long-lived string-keyed maps, made ONCE: a map made in the main goroutine is malloc-backed
+// and outlives arena_reset(), so re-making them on every reload would leak the old ones.
+var g_included = make(map[string]bool)
+var g_byhash = make(map[string]int)
+var g_pend_ids = make(map[string]bool)
+var g_pend_since = make(map[string]int)
+var g_inflight = make(map[string]bool)
+var g_sync_from = make(map[string]int)
+var g_sync_anc = make(map[string]int)
+var g_side = make(map[string]string)
+var g_side_prev = make(map[string]string)
+
+func maps_reset() {
+    map_clear_sb(g_included)
+    map_clear_si(g_byhash)
+    map_clear_sb(g_pend_ids)
+    map_clear_si(g_pend_since)
+    map_clear_sb(g_inflight)
+    map_clear_si(g_sync_from)
+    map_clear_si(g_sync_anc)
+    map_clear_ss(g_side)
+    map_clear_ss(g_side_prev)
+}
+
+type Msg struct { t string  genesis string  height int  tip string  weight int  port int  nat int  from int  npending int  raws []string  raw string  entries []Entry  entry Entry  err string }
 
 type Peer struct { addr string  height int  weight int  seen int  fails int  source string }
 
-type Node struct { cfg Config  datadir string  seedhex string  pub string  chain Chain  pending []Entry  pend_since map[string]int  pend_ids map[string]bool  peers []Peer  inflight map[string]bool  sync_from map[string]int  last_sync int  started int  sealed int  reorgs int }
+type Node struct { cfg Config  datadir string  seedhex string  pub string  chain Chain  pending []Entry  pend_since map[string]int  pend_ids map[string]bool  peers []Peer  inflight map[string]bool  sync_from map[string]int  sync_anc map[string]int  side map[string]string  side_prev map[string]string  side_n int  last_sync int  started int  sealed int  reorgs int }
 
 func logmsg(s) {
     println(time_format_utc(now(), "%Y-%m-%dT%H:%M:%SZ") + " " + s)
@@ -114,18 +139,6 @@ func gr_fetch(addr, line, ch) {
     ch <- "re\t" + addr + "\t" + reply
 }
 
-// gr_announce_seq: several announce lines (joined by "\n"), one dial each, IN ORDER — used to
-// push a run of blocks to a peer that is behind and cannot dial us back (a NAT'd node feeding
-// a restarted relay).
-func gr_announce_seq(addr, joined) {
-    lines := split(joined, "\n")
-    i := 0
-    while i < len(lines) {
-        if len(lines[i]) > 0 { gr_announce(addr, lines[i]) }
-        i = i + 1
-    }
-}
-
 // gr_announce: fire-and-forget push (a new entry or block); no event comes back.
 func gr_announce(addr, line) {
     host, port := split_addr(addr)
@@ -135,6 +148,17 @@ func gr_announce(addr, line) {
         write(fd, line + "\n")
         read_line_fd(fd)
         close(fd)
+    }
+}
+
+// gr_announce_seq: several announce lines (joined by "\n"), one dial each, IN ORDER — how a
+// node pushes a run of blocks to a peer that is behind and may be unable to dial it back.
+func gr_announce_seq(addr, joined) {
+    lines := split(joined, "\n")
+    i := 0
+    while i < len(lines) {
+        if len(lines[i]) > 0 { gr_announce(addr, lines[i]) }
+        i = i + 1
     }
 }
 
@@ -173,6 +197,56 @@ func addr_hash(addr) (h) {
     while i < len(b) { h = (h * 31 + byte_at(b, i)) % 1000000007  i = i + 1 }
 }
 
+// ---- messages ----
+
+func msg_base(n, t) (m) {
+    m = Msg{t: t, genesis: n.chain.heads[0].hash, height: 0, tip: "", weight: 0, port: adv_port(n), nat: 0, from: 0, npending: 0, raws: []string{}, raw: "", entries: []Entry{}, entry: Entry{}, err: ""}
+}
+
+// adv_port: the port we tell peers to dial back; 0 when behind NAT (nobody can).
+func adv_port(n) (p) {
+    p = n.cfg.port
+    if n.cfg.nat { p = 0 }
+}
+
+func hello_line(n) (s) {
+    tip := chain_tip(n.chain)
+    m := msg_base(n, "hello")
+    m.height = tip.height
+    m.tip = tip.hash
+    m.weight = n.chain.weight
+    if n.cfg.nat { m.nat = 1 }
+    m.npending = len(n.pending)
+    s = json(m)
+}
+
+func msg_ok(err) (s) { s = json(Msg{t: "ok", genesis: "", height: 0, tip: "", weight: 0, port: 0, nat: 0, from: 0, npending: 0, raws: []string{}, raw: "", entries: []Entry{}, entry: Entry{}, err: err}) }
+
+func block_line(n, raw) (s) {
+    m := msg_base(n, "block")
+    m.raw = raw
+    s = json(m)
+}
+
+func entry_line(n, e) (s) {
+    m := msg_base(n, "entry")
+    m.entry = e
+    s = json(m)
+}
+
+// raws_from pages by block count AND by total entries, so one reply stays small.
+func raws_from(n, from, limit) (rs) {
+    rs = []string{}
+    i := from
+    if i < 0 { i = 0 }
+    total := 0
+    while i < len(n.chain.raws) && len(rs) < limit && total < 400 {
+        rs = append(rs, n.chain.raws[i])
+        total = total + n.chain.heads[i].n
+        i = i + 1
+    }
+}
+
 // ---- node state ----
 
 func node_load(dir) (n, err) {
@@ -182,11 +256,12 @@ func node_load(dir) (n, err) {
     seedhex := store_load_seed(dir)
     if len(seedhex) != 64 { err = "missing or bad node.key in " + dir  return }
     pub := to_hex(ed25519_pub(from_hex(seedhex)))
-    blocks := store_load_blocks(dir)
-    chain, applied, cerr := chain_rebuild(cfg, blocks)
+    raws := store_load_raws(dir)
+    maps_reset()
+    chain, applied, cerr := chain_rebuild_into(cfg, raws, g_included, g_byhash)
     if len(cerr) > 0 { err = "chain.jsonl: " + cerr  return }
-    if len(blocks) == 0 { store_rewrite_blocks(dir, chain.blocks) }
-    n = Node{cfg: cfg, datadir: dir, seedhex: seedhex, pub: pub, chain: chain, pending: []Entry{}, pend_since: make(map[string]int), pend_ids: make(map[string]bool), peers: []Peer{}, inflight: make(map[string]bool), sync_from: make(map[string]int), last_sync: 0, started: now(), sealed: 0, reorgs: 0}
+    if len(raws) == 0 { store_rewrite_raws(dir, chain.raws) }
+    n = Node{cfg: cfg, datadir: dir, seedhex: seedhex, pub: pub, chain: chain, pending: []Entry{}, pend_since: g_pend_since, pend_ids: g_pend_ids, peers: []Peer{}, inflight: g_inflight, sync_from: g_sync_from, sync_anc: g_sync_anc, side: g_side, side_prev: g_side_prev, side_n: 0, last_sync: 0, started: now(), sealed: 0, reorgs: 0}
     i := 0
     while i < len(cfg.peers) { n = peer_learn(n, cfg.peers[i], "config")  i = i + 1 }
     learned := store_load_peers(dir)
@@ -194,7 +269,7 @@ func node_load(dir) (n, err) {
     while k < len(learned) { n = peer_learn(n, learned[k], "learned")  k = k + 1 }
     saved := store_load_pending(dir)
     j := 0
-    while j < len(saved) { n = pending_add(n, saved[j])  j = j + 1 }
+    while j < len(saved) { if has(chain.included, saved[j].id) == false { n = pending_add(n, saved[j]) }  j = j + 1 }
     if g_ctr["gcs"] == 0 { logmsg("loaded " + str(applied) + " blocks, weight " + str(chain.weight) + ", " + str(len(n.pending)) + " pending, " + str(len(n.peers)) + " peers") }
 }
 
@@ -235,7 +310,7 @@ func peer_mark(n, addr, height, weight, ok) (out) {
     }
 }
 
-// pending_add: validate + queue an entry. Returns (node, accepted, reason).
+// pending_accept: validate + queue an entry. Returns (node, accepted, reason).
 func pending_accept(n, e) (out, ok, reason) {
     out = n
     ok = false
@@ -275,38 +350,11 @@ func pending_prune(n) (out) {
     out.pending = keep
 }
 
-// adv_port: the port we tell peers to dial back; 0 when behind NAT (nobody can).
-func adv_port(n) (p) {
-    p = n.cfg.port
-    if n.cfg.nat { p = 0 }
-}
-
-func hello_line(n) (s) {
-    tip := chain_tip(n.chain)
-    natflag := 0
-    if n.cfg.nat { natflag = 1 }
-    s = json(Msg{t: "hello", genesis: n.chain.blocks[0].hash, height: tip.height, tip: tip.hash, weight: n.chain.weight, port: adv_port(n), nat: natflag, from: 0, npending: len(n.pending), blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""})
-}
-
-func msg_ok(err) (s) { s = json(Msg{t: "ok", genesis: "", height: 0, tip: "", weight: 0, port: 0, nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: err}) }
-
-// blocks_from pages by block count AND by total entries, so one reply never explodes parse().
-func blocks_from(n, from, limit) (bs) {
-    bs = []Block{}
-    i := from
-    if i < 0 { i = 0 }
-    total := 0
-    while i < len(n.chain.blocks) && len(bs) < limit && total < 400 {
-        bs = append(bs, n.chain.blocks[i])
-        total = total + len(n.chain.blocks[i].entries)
-        i = i + 1
-    }
-}
-
 // ---- outbound ----
 
 func node_send(n, addr, line) (out) {
     out = n
+    if len(addr) == 0 { return }
     if has(out.inflight, addr) && out.inflight[addr] { return }
     out.inflight[addr] = true
     go gr_fetch(addr, line, g_evch)
@@ -322,133 +370,233 @@ func node_broadcast(n, line) {
     }
 }
 
-// want_sync: ask addr for blocks starting at our tip height (it includes the block at that height
-// so we can confirm it is a common ancestor).
+// want_sync: ask addr for blocks starting at a height (it includes that block so we can
+// confirm a common ancestor).
 func want_sync(n, addr, from) (out) {
     out = n
+    if len(addr) == 0 { return }
     if from < 0 { from = 0 }
     out.sync_from[addr] = from
-    out = node_send(out, addr, json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: from, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}))
+    m := msg_base(out, "blocks")
+    m.from = from
+    out = node_send(out, addr, json(m))
+}
+
+// push_from: announce our blocks after height h to addr, in order (bounded per round).
+func push_from(n, addr, h) {
+    lines := []string{}
+    i := h + 1
+    while i < len(n.chain.raws) && len(lines) < 25 { lines = append(lines, block_line(n, n.chain.raws[i]))  i = i + 1 }
+    if len(lines) > 0 { go gr_announce_seq(addr, join(lines, "\n")) }
 }
 
 // ---- applying blocks ----
 
-func node_append(n, b, source) (out, err) {
+func node_append(n, raw, source) (out, err) {
     out = n
-    err = chain_check(out.chain, b)
+    c, e := chain_ingest(out.chain, raw)
+    err = e
     if len(err) > 0 { return }
-    out.chain = chain_apply(out.chain, b)
-    store_append_block(out.datadir, b)
+    out.chain = c
+    store_append_raw(out.datadir, raw)
     out = pending_prune(out)
     store_save_pending(out.datadir, out.pending)
-    logmsg("block " + str(b.height) + " " + substr(b.hash, 0, 12) + " (" + str(len(b.entries)) + " entries, weight " + str(out.chain.weight) + ") from " + source)
+    h := chain_tip(out.chain)
+    logmsg("block " + str(h.height) + " " + substr(h.hash, 0, 12) + " (" + str(h.n) + " entries, weight " + str(out.chain.weight) + ") from " + source)
 }
 
-// node_adopt replaces the chain with cand (already rebuilt/validated) if fork choice prefers it.
-func node_adopt(n, cand, source) (out, changed) {
+// orphan_lines: JSON lines of the entries in raw that the (new) chain does not include.
+func orphan_lines(raw, c) (lines) {
+    lines = ""
+    arena {
+        b := parse(raw, Block{})
+        xs := []string{}
+        i := 0
+        while i < len(b.entries) {
+            if has(c.included, b.entries[i].id) == false { xs = append(xs, json(b.entries[i])) }
+            i = i + 1
+        }
+        lines = escape(join(xs, "\n"))
+    }
+}
+
+// try_candidate: our chain up to anc + extra raw lines. Judged inside an arena (nothing parsed
+// survives); adopted only if fork choice prefers it, by rebuilding into the live maps.
+func try_candidate(n, anc, extra, source) (out, changed) {
     out = n
     changed = false
-    if chain_better(cand, out.chain) == false { return }
-    old := out.chain
-    out.chain = cand
+    cand := []string{}
+    k := 0
+    while k <= anc && k < len(out.chain.raws) { cand = append(cand, out.chain.raws[k])  k = k + 1 }
+    m := 0
+    while m < len(extra) { cand = append(cand, extra[m])  m = m + 1 }
+    err, cw, ctip := chain_judge(out.cfg, cand)
+    if len(err) > 0 { logmsg("reject fork from " + source + ": " + err)  return }
+    if chain_better(cw, ctip, out.chain) == false { return }
+    oldh := chain_tip(out.chain).height
+    oldw := out.chain.weight
+    oldtail := []string{}
+    t := anc + 1
+    while t < len(out.chain.raws) { oldtail = append(oldtail, out.chain.raws[t])  t = t + 1 }
+    map_clear_sb(g_included)
+    map_clear_si(g_byhash)
+    c, applied, err2 := chain_rebuild_into(out.cfg, cand, g_included, g_byhash)
+    if len(err2) > 0 { logmsg("BUG: candidate failed on second rebuild: " + err2)  exit(4) }
+    out.chain = c
     out.reorgs = out.reorgs + 1
-    store_rewrite_blocks(out.datadir, cand.blocks)
+    store_rewrite_raws(out.datadir, c.raws)
     // entries orphaned by the reorg go back to pending
-    i := 1
-    while i < len(old.blocks) {
-        es := old.blocks[i].entries
-        j := 0
-        while j < len(es) {
-            if has(cand.included, es[j].id) == false { out = pending_add(out, es[j]) }
-            j = j + 1
+    i := 0
+    while i < len(oldtail) {
+        ol := orphan_lines(oldtail[i], out.chain)
+        if len(ol) > 0 {
+            ls := split(ol, "\n")
+            j := 0
+            while j < len(ls) { out = pending_add(out, parse(ls[j], Entry{}))  j = j + 1 }
         }
         i = i + 1
     }
     out = pending_prune(out)
     store_save_pending(out.datadir, out.pending)
     changed = true
-    logmsg("adopted chain height " + str(chain_tip(cand).height) + " weight " + str(cand.weight) + " (was " + str(chain_tip(old).height) + "/" + str(old.weight) + ") from " + source)
+    logmsg("adopted chain height " + str(chain_tip(c).height) + " weight " + str(c.weight) + " (was " + str(oldh) + "/" + str(oldw) + ") from " + source)
 }
 
-// on_blocks: a page of blocks from addr, starting at the height we asked for.
-func on_blocks(n, addr, bs) (out) {
+// side_add: buffer a block we cannot append yet; returns false if already known.
+func side_add(n, raw, bhash, bprev) (out) {
+    out = n
+    if has(out.side, bhash) { return }
+    if out.side_n >= 400 {
+        map_clear_ss(out.side)
+        map_clear_ss(out.side_prev)
+        out.side_n = 0
+    }
+    out.side[bhash] = raw
+    out.side_prev[bhash] = bprev
+    out.side_n = out.side_n + 1
+}
+
+// side_assemble: from a buffered block, follow prev pointers down to a block we hold and try
+// the assembled branch as a candidate. Returns (node, adopted, complete).
+func side_assemble(n, bhash, source) (out, changed, complete) {
+    out = n
+    changed = false
+    complete = false
+    path := []string{bhash}
+    cur := out.side_prev[bhash]
+    depth := 0
+    while has(out.chain.byhash, cur) == false && depth < 400 {
+        if has(out.side, cur) == false { cur = ""  depth = 400 } else { path = append(path, cur)  cur = out.side_prev[cur]  depth = depth + 1 }
+    }
+    if len(cur) == 0 || has(out.chain.byhash, cur) == false { return }
+    complete = true
+    anc := out.chain.byhash[cur]
+    extra := []string{}
+    i := len(path) - 1
+    while i >= 0 { extra = append(extra, out.side[path[i]])  i = i - 1 }
+    o, ch := try_candidate(out, anc, extra, source)
+    out = o
+    changed = ch
+}
+
+// on_blocks: a page of raw blocks from addr. Two phases per peer: locate the common ancestor
+// (walk back while the first block mismatches), then page the peer's branch into the side
+// buffer and assemble it; if the branch loses fork choice, push ours from the ancestor.
+func on_blocks(n, addr, rs) (out) {
     out = n
     asked := out.sync_from[addr]
     delete(out.sync_from, addr)
-    if len(bs) == 0 { return }
-    first := bs[0]
-    if first.height != asked { return }
-    if first.height >= len(out.chain.blocks) { return }
-    if out.chain.blocks[first.height].hash != first.hash {
-        // not a common ancestor yet: walk back (genesis always matches)
-        if first.height > 0 { out = want_sync(out, addr, first.height - 1) }
+    if len(rs) == 0 { delete(out.sync_anc, addr)  return }
+    fh, fp, fhash := raw_head(rs[0])
+    if fh != asked { delete(out.sync_anc, addr)  return }
+    if has(out.sync_anc, addr) == false {
+        if fh >= len(out.chain.heads) { return }
+        if out.chain.heads[fh].hash != fhash {
+            if fh > 0 { out = want_sync(out, addr, fh - 1) }
+            return
+        }
+        out.sync_anc[addr] = fh
+    }
+    anc := out.sync_anc[addr]
+    tip := chain_tip(out.chain)
+    if len(rs) == 1 && fh == anc {
+        // the peer's chain ends at our block: it is behind us -> push what it lacks
+        delete(out.sync_anc, addr)
+        if anc < tip.height { push_from(out, addr, anc) }
         return
     }
-    // fast path: extends our tip
-    tip := chain_tip(out.chain)
-    if first.height == tip.height {
-        i := 1
-        while i < len(bs) {
-            o, err := node_append(out, bs[i], addr)
-            if len(err) > 0 { logmsg("reject block " + str(bs[i].height) + " from " + addr + ": " + err)  return }
-            out = o
-            i = i + 1
+    lasthash := ""
+    lasth := fh
+    i := 0
+    if fh == anc { i = 1 }
+    while i < len(rs) {
+        bh, bprev, bhash := raw_head(rs[i])
+        if has(out.chain.byhash, bhash) == false {
+            if bh == chain_tip(out.chain).height + 1 && bprev == chain_tip(out.chain).hash {
+                o, err := node_append(out, rs[i], addr)
+                if len(err) > 0 { logmsg("reject block from " + addr + ": " + err)  delete(out.sync_anc, addr)  return }
+                out = o
+            } else {
+                out = side_add(out, rs[i], bhash, bprev)
+                lasthash = bhash
+            }
         }
-    } else {
-        cand := []Block{}
-        k := 0
-        while k <= first.height { cand = append(cand, out.chain.blocks[k])  k = k + 1 }
-        m := 1
-        while m < len(bs) { cand = append(cand, bs[m])  m = m + 1 }
-        c, applied, err2 := chain_rebuild(out.cfg, cand)
-        if len(err2) > 0 { logmsg("reject fork from " + addr + ": " + err2)  return }
-        o2, changed := node_adopt(out, c, addr)
-        out = o2
-        if changed == false { return }
+        lasth = bh
+        i = i + 1
     }
-    // a full page means there may be more
-    if len(bs) >= 2 { out = want_sync(out, addr, chain_tip(out.chain).height) }
+    if len(rs) >= 2 && lasth - anc < 2000 {
+        // more may follow: continue from the last block of this page
+        out = want_sync(out, addr, lasth)
+        return
+    }
+    delete(out.sync_anc, addr)
+    if len(lasthash) > 0 {
+        o2, changed, complete := side_assemble(out, lasthash, addr)
+        out = o2
+        if changed { node_broadcast(out, block_line(out, out.side[lasthash])) }
+        if changed == false && complete { push_from(out, addr, anc) }
+    }
 }
 
 func on_hello(n, addr, m) (out) {
     out = n
-    if m.genesis != out.chain.blocks[0].hash { out = peer_mark(out, addr, m.height, m.weight, false)  return }
+    if m.genesis != out.chain.heads[0].hash { out = peer_mark(out, addr, m.height, m.weight, false)  return }
     out = peer_mark(out, addr, m.height, m.weight, true)
-    if m.npending > 0 && node_is_validator(out) && len(addr) > 0 && has(out.sync_from, addr) == false {
-        out = node_send(out, addr, json(Msg{t: "pending", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}))
+    if len(addr) == 0 { return }
+    if m.npending > 0 && node_is_validator(out) && has(out.sync_from, addr) == false {
+        out = node_send(out, addr, json(msg_base(out, "pending")))
     }
     tip := chain_tip(out.chain)
-    if m.weight < out.chain.weight && m.height < tip.height && m.height >= 0 && len(addr) > 0 {
-        // the peer is behind us; it may be unable to dial us (we are behind NAT), so push in order
-        if m.height < len(out.chain.blocks) && (m.height == 0 || out.chain.blocks[m.height].hash == m.tip) {
-            lines := []string{}
-            h := m.height + 1
-            while h < len(out.chain.blocks) && len(lines) < 25 {
-                lines = append(lines, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: out.chain.blocks[h], err: ""}))
-                h = h + 1
-            }
-            go gr_announce_seq(addr, join(lines, "\n"))
-        }
-    }
-    if m.weight > out.chain.weight {
-        out = want_sync(out, addr, chain_tip(out.chain).height)
-    } else if m.weight == out.chain.weight && m.tip != chain_tip(out.chain).hash && m.tip < chain_tip(out.chain).hash {
-        out = want_sync(out, addr, chain_tip(out.chain).height)
+    differs := m.weight != out.chain.weight || m.tip != tip.hash
+    if differs && has(out.sync_from, addr) == false {
+        // ahead, behind or forked: find the common ancestor, then pull (if better) or push
+        delete(out.sync_anc, addr)
+        from := m.height
+        if tip.height < from { from = tip.height }
+        out = want_sync(out, addr, from)
     }
 }
 
-func on_block_announce(n, addr, b) (out) {
+// on_block_announce: extend the tip, or buffer a side block and try to assemble a fork.
+func on_block_announce(n, addr, raw) (out) {
     out = n
+    bh, bprev, bhash := raw_head(raw)
+    if bh < 0 || len(bhash) == 0 { return }
+    if has(out.chain.byhash, bhash) { return }
     tip := chain_tip(out.chain)
-    if b.height == tip.height + 1 && b.prev == tip.hash {
-        o, err := node_append(out, b, addr)
-        if len(err) > 0 { logmsg("reject announced block " + str(b.height) + ": " + err)  return }
+    if bh == tip.height + 1 && bprev == tip.hash {
+        o, err := node_append(out, raw, addr)
+        if len(err) > 0 { logmsg("reject announced block " + str(bh) + ": " + err)  return }
         out = o
-        node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: b, err: ""}))
+        node_broadcast(out, block_line(out, raw))
         return
     }
-    if b.hash == tip.hash { return }
-    if len(addr) > 0 { out = want_sync(out, addr, tip.height) }
+    if has(out.side, bhash) { return }
+    out = side_add(out, raw, bhash, bprev)
+    o2, changed, complete := side_assemble(out, bhash, addr)
+    out = o2
+    if changed { node_broadcast(out, block_line(out, raw))  return }
+    if complete == false && len(addr) > 0 { out = want_sync(out, addr, tip.height) }
 }
 
 // ---- inbound peer messages ----
@@ -466,16 +614,22 @@ func handle_p2p(n, raw, remote_ip) (out, resp) {
         resp = hello_line(out)
         return
     }
-    if m.genesis != out.chain.blocks[0].hash { resp = msg_ok("genesis mismatch")  return }
+    if m.genesis != out.chain.heads[0].hash { resp = msg_ok("genesis mismatch")  return }
     if m.t == "blocks" {
-        resp = json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: m.from, npending: 0, blocks: blocks_from(out, m.from, 100), entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""})
+        r := msg_base(out, "blocks")
+        r.from = m.from
+        r.raws = raws_from(out, m.from, 100)
+        resp = json(r)
         return
     }
     if m.t == "pending" {
+        r2 := msg_base(out, "pending")
         pl := []Entry{}
         i := 0
         while i < len(out.pending) && len(pl) < 200 { pl = append(pl, out.pending[i])  i = i + 1 }
-        resp = json(Msg{t: "pending", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: len(out.pending), blocks: []Block{}, entries: pl, entry: Entry{}, block: Block{}, err: ""})
+        r2.entries = pl
+        r2.npending = len(out.pending)
+        resp = json(r2)
         return
     }
     if m.t == "entry" {
@@ -483,7 +637,7 @@ func handle_p2p(n, raw, remote_ip) (out, resp) {
         out = o
         if ok {
             store_append_pending(out.datadir, m.entry)
-            node_broadcast(out, raw)
+            node_broadcast(out, entry_line(out, m.entry))
             resp = msg_ok("")
         } else {
             resp = msg_ok(reason)
@@ -491,7 +645,7 @@ func handle_p2p(n, raw, remote_ip) (out, resp) {
         return
     }
     if m.t == "block" {
-        out = on_block_announce(out, addr, m.block)
+        out = on_block_announce(out, addr, m.raw)
         resp = msg_ok("")
         return
     }
@@ -505,14 +659,14 @@ func on_push(n, addr, raw) (out) {
     m := parse(raw, Msg{})
     if m.t == "ping" { return }
     if m.t == "hello" { out = on_hello(out, addr, m)  return }
-    if m.genesis != out.chain.blocks[0].hash { return }
-    if m.t == "block" { out = on_block_announce(out, addr, m.block)  return }
+    if m.genesis != out.chain.heads[0].hash { return }
+    if m.t == "block" { out = on_block_announce(out, addr, m.raw)  return }
     if m.t == "entry" {
         o, ok, reason := pending_accept(out, m.entry)
         out = o
         if ok {
             store_append_pending(out.datadir, m.entry)
-            node_broadcast(out, raw)
+            node_broadcast(out, entry_line(out, m.entry))
         }
     }
 }
@@ -538,7 +692,9 @@ func sub_maintain(n) (out) {
         if g_sub[h] != 1 && t - g_sub_ts[h] >= 15 {
             g_sub[h] = 1
             g_sub_ts[h] = t
-            go gr_subscribe(p.addr, json(Msg{t: "sub", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: 0, nat: 1, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}), g_evch)
+            sm := msg_base(out, "sub")
+            sm.nat = 1
+            go gr_subscribe(p.addr, json(sm), g_evch)
         }
         i = i + 1
     }
@@ -550,11 +706,12 @@ func on_reply(n, addr, raw) (out) {
     if len(raw) == 0 {
         out = peer_mark(out, addr, 0, 0, false)
         delete(out.sync_from, addr)
+        delete(out.sync_anc, addr)
         return
     }
     m := parse(raw, Msg{})
     if m.t == "hello" { out = on_hello(out, addr, m)  return }
-    if m.t == "blocks" { out = on_blocks(out, addr, m.blocks)  return }
+    if m.t == "blocks" { out = on_blocks(out, addr, m.raws)  return }
     if m.t == "pending" {
         i := 0
         while i < len(m.entries) {
@@ -593,17 +750,16 @@ func try_seal(n) (out) {
     batch := []Entry{}
     j := 0
     while j < len(out.pending) && len(batch) < 200 { batch = append(batch, out.pending[j])  j = j + 1 }
-    b := block_seal(out.seedhex, tip, batch)
-    o, err := node_append(out, b, "seal")
+    raw := json(block_seal(out.seedhex, tip, batch))
+    o, err := node_append(out, raw, "seal")
     if len(err) > 0 {
-        // some pending entry is no longer valid (e.g. author revoked): drop the batch head that fails
         logmsg("seal rejected: " + err + "; dropping stale pending entries")
         out = drop_invalid_pending(out)
         return
     }
     out = o
     out.sealed = out.sealed + 1
-    node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: b, err: ""}))
+    node_broadcast(out, block_line(out, raw))
 }
 
 func drop_invalid_pending(n) (out) {
@@ -637,23 +793,21 @@ func on_tick(n) (out) {
             if p.fails < 5 || (t / out.cfg.sync_interval) % 6 == 0 { out = node_send(out, p.addr, line) }
             i = i + 1
         }
-    }
-    if t == out.last_sync && len(out.pending) > 0 {
         // re-announce pending entries older than two sync rounds (a relay may have been down)
         sent := 0
-        i := 0
-        while i < len(out.pending) && sent < 50 {
-            e := out.pending[i]
+        j := 0
+        while j < len(out.pending) && sent < 50 {
+            e := out.pending[j]
             if t - out.pend_since[e.id] >= 2 * out.cfg.sync_interval {
-                node_broadcast(out, json(Msg{t: "entry", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: e, block: Block{}, err: ""}))
+                node_broadcast(out, entry_line(out, e))
                 sent = sent + 1
             }
-            i = i + 1
+            j = j + 1
         }
     }
     if t - g_ctr["last_ping"] >= 30 && len(g_subfds) > 0 {
         g_ctr["last_ping"] = t
-        sub_push_all(json(Msg{t: "ping", genesis: "", height: 0, tip: "", weight: 0, port: 0, nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}))
+        sub_push_all(msg_ok(""))
     }
     out = sub_maintain(out)
     out = try_seal(out)
@@ -684,7 +838,7 @@ func on_in(n, fd, raw) (out) {
         if out.cfg.relay { cap = 256 }
         if len(g_subfds) >= cap { write(fd, msg_ok("too many subscribers") + "\n")  close(fd)  return }
         m := parse(raw, Msg{})
-        if m.genesis != out.chain.blocks[0].hash { write(fd, msg_ok("genesis mismatch") + "\n")  close(fd)  return }
+        if m.genesis != out.chain.heads[0].hash { write(fd, msg_ok("genesis mismatch") + "\n")  close(fd)  return }
         socket_timeout(fd, 10000)
         write(fd, hello_line(out) + "\n")
         g_subfds[fd] = 1
@@ -703,27 +857,28 @@ func on_in(n, fd, raw) (out) {
     close(fd)
 }
 
-// node_gc keeps a long-running single-actor loop flat: the main goroutine's arena never
-// returns, so every parsed message would otherwise live forever. At a quiescent point we
-// free the whole arena and rebuild the node from disk (chain.jsonl / pending.jsonl /
-// peers.json are the truth anyway). Cross-reset state = ints in g_ctr, the channel, fds.
 func rss_kb() (kb) {
     // /proc files read as empty via read_file (size 0), so ask ps about our own pid ($PPID of the shell).
     code, out, err := exec("ps -o rss= -p $PPID")
     kb = parse_int(trim(out))
 }
 
+// node_gc keeps a long-running single-actor loop flat: the main goroutine's arena never
+// returns, so every parsed message would otherwise live forever. When RSS has grown past a
+// threshold (or after a quiet minute) we free the whole arena and rebuild the node from
+// disk (chain.jsonl / pending.jsonl / peers.json are the truth). Cross-reset state = ints
+// in g_ctr / g_sub*, the channel, fds.
 func node_gc(n) (out) {
     out = n
     g_ctr["events"] = g_ctr["events"] + 1
-    if g_ctr["events"] % 50 != 0 { return }
+    if g_ctr["events"] % 25 != 0 { return }
     rss := rss_kb()
     if len(env("GREFFE_DEBUG")) > 0 && g_ctr["events"] % 100 == 0 {
         logmsg("mem events=" + str(g_ctr["events"]) + " rss=" + str(rss) + "kB in=" + str(g_ctr["ev_in"]) + " re=" + str(g_ctr["ev_re"]) + " push=" + str(g_ctr["ev_push"]) + " pending=" + str(len(out.pending)) + " height=" + str(chain_tip(out.chain).height))
     }
     grown := rss - g_ctr["rss_base"]
     idle := now() - g_ctr["last_gc"] >= 60
-    if grown < 32768 && (idle == false || grown < 4096) && g_ctr["events"] < 5000 { return }
+    if grown < 24576 && (idle == false || grown < 4096) && g_ctr["events"] < 5000 { return }
     if out_inflight_count(out) > 0 && grown < 131072 { return }
     g_ctr["sealed"] = out.sealed
     g_ctr["reorgs"] = out.reorgs

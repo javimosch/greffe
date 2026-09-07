@@ -32,6 +32,16 @@ sleep 2; [[ $($G status --data "$T/a" | field height) == 4 ]] || { echo "FAIL a 
 start r1; wait_height r1 4 12                                              # relay resyncs from subscribers' hellos
 wait_height a 5 20                                                         # b's pending entry reaches a via r1, a seals
 wait_height b 5 8
-for n in a b r1; do $G verify --data "$T/$n" | grep -q '"ok":true' || { echo "FAIL verify $n"; exit 1; }; done
+# fork: make b a validator, take both relays down, let a and b each seal a block, bring a relay back
+$G grant validator "$(pub "$T/b")" --data "$T/a" --wait >/dev/null; wait_height b 6 10
+stop r1
+$G put --data "$T/a" --kind note --payload '{"fork":"a"}' --wait >/dev/null
+$G put --data "$T/b" --kind note --payload '{"fork":"b"}' --wait >/dev/null
+[[ $($G status --data "$T/a" | field tip) != $($G status --data "$T/b" | field tip) ]] || { echo "FAIL expected a fork"; exit 1; }
+start r1; start r2
+for i in $(seq 1 40); do [[ $($G status --data "$T/a" | field tip) == $($G status --data "$T/b" | field tip) ]] && break; sleep 1; done
+[[ $($G status --data "$T/a" | field tip) == $($G status --data "$T/b" | field tip) ]] || { echo "FAIL fork never converged"; $G status --data "$T/a"; $G status --data "$T/b"; $G status --data "$T/r1"; tail -n 8 "$T"/*.log; exit 1; }
+wait_height a 8 20; wait_height b 8 20                                     # the losing side's entry got re-sealed
+for n in a b r1 r2; do $G verify --data "$T/$n" | grep -q '"ok":true' || { echo "FAIL verify $n"; exit 1; }; done
 [[ $($G status --data "$T/a" | field tip) == $($G status --data "$T/b" | field tip) ]] || { echo "FAIL tips differ"; exit 1; }
-echo "OK relay: subscribe push, relay key powerless, member via relay, relay failover, no-relay hold, relay recovery, convergence"
+echo "OK relay: subscribe push, relay key powerless, member via relay, relay failover, no-relay hold, relay recovery, fork convergence through relays, orphan re-seal"

@@ -30,37 +30,34 @@ func store_save_seed(dir, seedhex) (ok) {
     system("chmod 600 " + p)
 }
 
-// store_load_blocks reads chain.jsonl (may be absent -> empty).
-func store_load_blocks(dir) (blocks) {
-    blocks = []Block{}
+// store_load_raws reads chain.jsonl as raw lines (may be absent -> empty).
+func store_load_raws(dir) (raws) {
+    raws = []string{}
     raw := read_file(store_chain_path(dir))
     if len(raw) == 0 { return }
     lines := split(raw, "\n")
     i := 0
     while i < len(lines) {
         line := trim(lines[i])
-        if len(line) > 0 { blocks = append(blocks, parse(line, Block{})) }
+        if len(line) > 0 { raws = append(raws, line) }
         i = i + 1
     }
 }
 
-// store_append_block appends one block line durably (write -> fsync file -> fsync dir).
-func store_append_block(dir, b) (ok) {
+// store_append_raw appends one block line durably (write -> fsync file -> fsync dir).
+func store_append_raw(dir, line) (ok) {
     p := store_chain_path(dir)
     off := file_size(p)
     if off < 0 { off = 0 }
-    ok = write_file_at(p, off, bytes(json(b) + "\n")) >= 0
+    ok = write_file_at(p, off, bytes(line + "\n")) >= 0
     fsync(p)
     fsync(dir)
 }
 
-// store_rewrite_blocks replaces chain.jsonl (after a reorg).
-func store_rewrite_blocks(dir, blocks) (ok) {
-    lines := []string{}
-    i := 0
-    while i < len(blocks) { lines = append(lines, json(blocks[i]))  i = i + 1 }
+// store_rewrite_raws replaces chain.jsonl (after a reorg).
+func store_rewrite_raws(dir, raws) (ok) {
     p := store_chain_path(dir)
-    ok = write_file(p, join(lines, "\n") + "\n") >= 0
+    ok = write_file(p, join(raws, "\n") + "\n") >= 0
     fsync(p)
     fsync(dir)
 }

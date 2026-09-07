@@ -1,71 +1,51 @@
-2026-09-07T06:55:27Z loaded 1 blocks, weight 0, 0 pending, 0 peers
-2026-09-07T06:55:27Z greffe 0.1.0 'bench' validator 84f47f5daef6 listening on :7541 height 0
-2026-09-07T06:55:31Z block 1 a135c1c1cf5d (1 entries, weight 2) from seal
-2026-09-07T06:55:32Z mem events=100 rss=9312kB in=95 re=1 push=0 pending=47 height=1
-2026-09-07T06:55:32Z mem events=200 rss=11900kB in=195 re=1 push=0 pending=84 height=1
-2026-09-07T06:55:32Z mem events=300 rss=14392kB in=295 re=1 push=0 pending=124 height=1
-2026-09-07T06:55:32Z mem events=400 rss=16916kB in=395 re=1 push=0 pending=164 height=1
-2026-09-07T06:55:32Z mem events=500 rss=19564kB in=495 re=1 push=0 pending=208 height=1
-2026-09-07T06:55:32Z mem events=600 rss=22048kB in=595 re=1 push=0 pending=251 height=1
-2026-09-07T06:55:32Z mem events=700 rss=24544kB in=695 re=1 push=0 pending=291 height=1
-2026-09-07T06:55:32Z mem events=800 rss=26908kB in=795 re=1 push=0 pending=331 height=1
-2026-09-07T06:55:33Z block 2 0e25f8304803 (200 entries, weight 4) from seal
-2026-09-07T06:55:33Z mem events=900 rss=32540kB in=894 re=1 push=0 pending=170 height=2
-2026-09-07T06:55:33Z mem events=1000 rss=58024kB in=992 re=3 push=0 pending=213 height=2
-2026-09-07T06:55:33Z mem events=1100 rss=88108kB in=1090 re=5 push=0 pending=251 height=2
-2026-09-07T06:55:33Z gc #1 rss 88108kB -> 22948kB
-2026-09-07T06:55:33Z mem events=100 rss=25000kB in=1190 re=5 push=0 pending=308 height=2
-2026-09-07T06:55:33Z mem events=200 rss=27000kB in=1290 re=5 push=0 pending=341 height=2
-2026-09-07T06:55:33Z mem events=300 rss=29320kB in=1390 re=5 push=0 pending=382 height=2
-2026-09-07T06:55:33Z mem events=400 rss=31916kB in=1490 re=5 push=0 pending=429 height=2
-2026-09-07T06:55:33Z mem events=500 rss=34208kB in=1590 re=5 push=0 pending=469 height=2
-2026-09-07T06:55:34Z mem events=600 rss=36628kB in=1689 re=5 push=0 pending=509 height=2
-2026-09-07T06:55:34Z mem events=700 rss=49228kB in=1788 re=6 push=0 pending=547 height=2
-2026-09-07T06:55:34Z mem events=800 rss=51648kB in=1888 re=6 push=0 pending=583 height=2
-2026-09-07T06:55:34Z mem events=900 rss=54236kB in=1988 re=6 push=0 pending=630 height=2
-2026-09-07T06:55:34Z mem events=1000 rss=56476kB in=2088 re=6 push=0 pending=659 height=2
-2026-09-07T06:55:34Z gc #2 rss 56476kB -> 28772kB
-2026-09-07T06:55:34Z mem events=100 rss=29620kB in=2188 re=6 push=0 pending=697 height=2
-2026-09-07T06:55:34Z mem events=200 rss=31144kB in=2288 re=6 push=0 pending=738 height=2
-2026-09-07T06:55:34Z mem events=300 rss=33072kB in=2388 re=6 push=0 pending=775 height=2
-2026-09-07T06:55:35Z mem events=400 rss=35324kB in=2487 re=6 push=0 pending=814 height=2
-2026-09-07T06:55:35Z mem events=500 rss=40056kB in=2585 re=8 push=0 pending=853 height=2
-2026-09-07T06:55:35Z mem events=600 rss=60532kB in=2683 re=10 push=0 pending=896 height=2
-2026-09-07T06:55:35Z gc #3 rss 61800kB -> 31924kB
-2026-09-07T06:55:35Z mem events=100 rss=33160kB in=2833 re=10 push=0 pending=975 height=2
-2026-09-07T06:55:35Z mem events=200 rss=34572kB in=2933 re=10 push=0 pending=1011 height=2
-2026-09-07T06:55:35Z mem events=300 rss=36276kB in=3033 re=10 push=0 pending=1044 height=2
-2026-09-07T06:55:35Z mem events=400 rss=38188kB in=3133 re=10 push=0 pending=1078 height=2
-2026-09-07T06:55:36Z mem events=500 rss=41016kB in=3232 re=10 push=0 pending=1118 height=2
-2026-09-07T06:55:36Z mem events=600 rss=53224kB in=3331 re=11 push=0 pending=1158 height=2
-2026-09-07T06:55:36Z mem events=700 rss=55652kB in=3431 re=11 push=0 pending=1205 height=2
-2026-09-07T06:55:36Z mem events=800 rss=57756kB in=3531 re=11 push=0 pending=1236 height=2
-2026-09-07T06:55:36Z mem events=900 rss=59920kB in=3631 re=11 push=0 pending=1269 height=2
-2026-09-07T06:55:36Z mem events=1000 rss=62528kB in=3731 re=11 push=0 pending=1311 height=2
-2026-09-07T06:55:36Z mem events=1100 rss=65212kB in=3831 re=11 push=0 pending=1357 height=2
-2026-09-07T06:55:36Z gc #4 rss 65212kB -> 37816kB
-2026-09-07T06:55:36Z mem events=100 rss=38492kB in=3931 re=11 push=0 pending=1378 height=2
-2026-09-07T06:55:36Z mem events=200 rss=39200kB in=4030 re=11 push=0 pending=1419 height=2
-2026-09-07T06:55:37Z mem events=300 rss=41988kB in=4128 re=13 push=0 pending=1463 height=2
-2026-09-07T06:55:37Z mem events=400 rss=62448kB in=4226 re=15 push=0 pending=1501 height=2
-2026-09-07T06:55:37Z mem events=500 rss=65136kB in=4326 re=15 push=0 pending=1551 height=2
-2026-09-07T06:55:37Z mem events=600 rss=67212kB in=4426 re=15 push=0 pending=1585 height=2
-2026-09-07T06:55:37Z mem events=700 rss=69628kB in=4526 re=15 push=0 pending=1627 height=2
-2026-09-07T06:55:37Z gc #5 rss 70932kB -> 41052kB
-2026-09-07T06:55:37Z mem events=100 rss=41580kB in=4676 re=15 push=0 pending=1693 height=2
-2026-09-07T06:55:37Z mem events=200 rss=42220kB in=4776 re=15 push=0 pending=1720 height=2
-2026-09-07T06:55:37Z mem events=300 rss=43596kB in=4875 re=15 push=0 pending=1755 height=2
-2026-09-07T06:55:38Z block 3 63d31ca8e370 (200 entries, weight 6) from 127.0.0.1:7542
-2026-09-07T06:55:38Z mem events=400 rss=61932kB in=4975 re=15 push=0 pending=1595 height=3
-2026-09-07T06:55:38Z gc #6 rss 90448kB -> 50848kB
-2026-09-07T06:55:39Z block 4 3400c77e5145 (200 entries, weight 7) from 127.0.0.1:7542
-2026-09-07T06:55:40Z block 5 968f6eacc695 (200 entries, weight 9) from 127.0.0.1:7542
-2026-09-07T06:55:40Z block 6 b825f13e256f (200 entries, weight 11) from seal
-2026-09-07T06:55:41Z block 7 7e4adcf960d7 (200 entries, weight 12) from seal
-2026-09-07T06:55:42Z gc #7 rss 226568kB -> 88092kB
-2026-09-07T06:55:43Z adopted chain height 7 weight 13 (was 7/12) from 127.0.0.1:7542
-2026-09-07T06:55:43Z block 8 7a9aa519c42d (200 entries, weight 14) from 127.0.0.1:7542
-2026-09-07T06:55:44Z block 9 2a970cc5bd26 (200 entries, weight 16) from 127.0.0.1:7542
-2026-09-07T06:55:44Z block 10 be6d85b93f74 (200 entries, weight 18) from seal
-2026-09-07T06:55:45Z block 11 fb3cbeca7610 (200 entries, weight 19) from seal
-2026-09-07T06:55:47Z gc #8 rss 351108kB -> 133916kB
+2026-09-07T07:27:29Z loaded 1 blocks, weight 0, 0 pending, 0 peers
+2026-09-07T07:27:29Z greffe 0.1.0 'bench' validator d106638bb0b5 listening on :7541 height 0
+2026-09-07T07:27:34Z block 1 a3f197529835 (1 entries, weight 2) from seal
+2026-09-07T07:27:35Z mem events=100 rss=8852kB in=91 re=4 push=0 pending=64 height=1
+2026-09-07T07:27:35Z mem events=200 rss=11216kB in=191 re=4 push=0 pending=126 height=1
+2026-09-07T07:27:35Z mem events=300 rss=13696kB in=291 re=4 push=0 pending=196 height=1
+2026-09-07T07:27:35Z mem events=400 rss=16084kB in=391 re=4 push=0 pending=264 height=1
+2026-09-07T07:27:35Z mem events=500 rss=18520kB in=491 re=4 push=0 pending=331 height=1
+2026-09-07T07:27:36Z mem events=600 rss=20848kB in=590 re=4 push=0 pending=398 height=1
+2026-09-07T07:27:36Z block 2 7acfd47c0856 (200 entries, weight 4) from 127.0.0.1:7542
+2026-09-07T07:27:36Z mem events=700 rss=25612kB in=690 re=4 push=0 pending=251 height=2
+2026-09-07T07:27:36Z mem events=800 rss=28968kB in=790 re=4 push=0 pending=335 height=2
+2026-09-07T07:27:36Z gc #1 rss 30556kB -> 13632kB
+2026-09-07T07:27:36Z mem events=100 rss=15208kB in=965 re=4 push=0 pending=412 height=2
+2026-09-07T07:27:37Z mem events=200 rss=17400kB in=1065 re=4 push=0 pending=496 height=2
+2026-09-07T07:27:37Z block 3 26acae29d6e8 (200 entries, weight 6) from seal
+2026-09-07T07:27:37Z mem events=300 rss=23640kB in=1163 re=5 push=0 pending=377 height=3
+2026-09-07T07:27:37Z mem events=400 rss=34456kB in=1262 re=6 push=0 pending=440 height=3
+2026-09-07T07:27:37Z mem events=500 rss=37300kB in=1362 re=6 push=0 pending=510 height=3
+2026-09-07T07:27:38Z gc #2 rss 38860kB -> 16376kB
+2026-09-07T07:27:38Z mem events=100 rss=18364kB in=1511 re=6 push=0 pending=582 height=3
+2026-09-07T07:27:38Z block 4 8eb8522c6875 (200 entries, weight 8) from 127.0.0.1:7542
+2026-09-07T07:27:38Z mem events=200 rss=31472kB in=1610 re=7 push=0 pending=459 height=4
+2026-09-07T07:27:38Z mem events=300 rss=34184kB in=1710 re=7 push=0 pending=549 height=4
+2026-09-07T07:27:38Z mem events=400 rss=36144kB in=1810 re=7 push=0 pending=609 height=4
+2026-09-07T07:27:38Z mem events=500 rss=38496kB in=1910 re=7 push=0 pending=670 height=4
+2026-09-07T07:27:39Z mem events=600 rss=41668kB in=2009 re=7 push=0 pending=768 height=4
+2026-09-07T07:27:39Z gc #3 rss 41668kB -> 19168kB
+2026-09-07T07:27:39Z mem events=100 rss=20572kB in=2109 re=7 push=0 pending=783 height=4
+2026-09-07T07:27:39Z mem events=200 rss=22648kB in=2209 re=7 push=0 pending=851 height=4
+2026-09-07T07:27:39Z mem events=300 rss=24848kB in=2309 re=7 push=0 pending=947 height=4
+2026-09-07T07:27:40Z mem events=400 rss=26744kB in=2408 re=7 push=0 pending=1017 height=4
+2026-09-07T07:27:40Z mem events=500 rss=30224kB in=2507 re=8 push=0 pending=1083 height=4
+2026-09-07T07:27:40Z mem events=600 rss=41052kB in=2606 re=9 push=0 pending=1132 height=4
+2026-09-07T07:27:40Z mem events=700 rss=44252kB in=2706 re=9 push=0 pending=1231 height=4
+2026-09-07T07:27:40Z gc #4 rss 44252kB -> 22696kB
+2026-09-07T07:27:41Z mem events=100 rss=24056kB in=2806 re=9 push=0 pending=1241 height=4
+2026-09-07T07:27:41Z block 5 2459e0d27299 (200 entries, weight 10) from seal
+2026-09-07T07:27:41Z mem events=200 rss=30512kB in=2905 re=9 push=0 pending=1130 height=5
+2026-09-07T07:27:41Z mem events=300 rss=42004kB in=3003 re=11 push=0 pending=1195 height=5
+2026-09-07T07:27:43Z block 6 386702efbcdf (200 entries, weight 11) from seal
+2026-09-07T07:27:43Z adopted chain height 6 weight 12 (was 6/11) from 127.0.0.1:7542
+2026-09-07T07:27:44Z block 7 530deda49423 (200 entries, weight 14) from seal
+2026-09-07T07:27:45Z block 8 de054c1eb384 (200 entries, weight 15) from seal
+2026-09-07T07:27:45Z gc #5 rss 60684kB -> 22180kB
+2026-09-07T07:27:45Z adopted chain height 8 weight 16 (was 8/15) from 127.0.0.1:7542
+2026-09-07T07:27:47Z block 9 897322613291 (200 entries, weight 18) from seal
+2026-09-07T07:27:48Z block 10 1f3abb63334e (200 entries, weight 19) from seal
+2026-09-07T07:27:48Z adopted chain height 10 weight 20 (was 10/19) from 127.0.0.1:7542
+2026-09-07T07:27:49Z block 11 303159c2242a (200 entries, weight 22) from seal
+2026-09-07T07:27:54Z gc #6 rss 56316kB -> 22080kB

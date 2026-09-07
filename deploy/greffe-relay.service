@@ -1,0 +1,20 @@
+# /etc/systemd/system/greffe.service — a public greffe RELAY (full node, no key power)
+[Unit]
+Description=greffe relay — public full node for NAT'd federation members
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/bin/greffe serve --data /root/.greffe
+Restart=always
+RestartSec=5
+# A relay idles at a few MB; the ceiling is a safety net for the arena reset logic, not a budget.
+MemoryMax=128M
+MemoryHigh=96M
+CPUWeight=50
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

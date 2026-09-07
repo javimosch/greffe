@@ -5,15 +5,22 @@
 // association's servers) in Clique-style round-robin; anyone in the member set
 // may author entries. Fork choice = highest total weight (in-turn block = 2,
 // out-of-turn = 1), ties broken by the lowest tip hash.
+//
+// MEMORY MODEL: a parsed Block costs ~90x its JSON in machin, so the chain keeps
+// each block as its RAW JSON LINE plus a small Head. Entries are parsed on demand
+// inside `arena { }` blocks and only scalars/strings are escaped out — the working
+// set stays ~1x the chain file, however many entries pass through.
 
 type Entry struct { id string  author string  ts int  kind string  payload string  sig string }
 
 type Block struct { height int  prev string  ts int  signer string  entries []Entry  hash string  sig string }
 
+type Head struct { height int  prev string  ts int  signer string  hash string  sig string  n int }
+
 type Config struct { name string  genesis_ts int  validators []string  members []string  peers []string  port int  block_interval int  sync_interval int  relay bool  nat bool }
 
-// Chain is the validated state: blocks + the sets derived from on-chain governance entries.
-type Chain struct { blocks []Block  validators []string  members []string  included map[string]bool  weight int }
+// Chain: validated state. heads[i]/raws[i] describe block i; byhash maps hash -> height.
+type Chain struct { heads []Head  raws []string  byhash map[string]int  validators []string  members []string  included map[string]bool  weight int }
 
 func is_in(list, s) (ok) {
     ok = false
@@ -75,14 +82,14 @@ func entry_allowed(c, e) (ok) {
     ok = is_in(c.validators, e.author) || is_in(c.members, e.author)
 }
 
-func chain_effect(c, e) (out) {
+func chain_effect(c, kind, payload) (out) {
     out = c
-    if e.kind == "validator.add" { out.validators = add_unique(out.validators, e.payload) }
-    if e.kind == "validator.remove" {
-        if len(out.validators) > 1 { out.validators = remove_item(out.validators, e.payload) }
+    if kind == "validator.add" { out.validators = add_unique(out.validators, payload) }
+    if kind == "validator.remove" {
+        if len(out.validators) > 1 { out.validators = remove_item(out.validators, payload) }
     }
-    if e.kind == "member.add" { out.members = add_unique(out.members, e.payload) }
-    if e.kind == "member.remove" { out.members = remove_item(out.members, e.payload) }
+    if kind == "member.add" { out.members = add_unique(out.members, payload) }
+    if kind == "member.remove" { out.members = remove_item(out.members, payload) }
 }
 
 func block_hash(height, prev, ts, signer, entries) (h) {
@@ -100,11 +107,23 @@ func genesis_block(cfg) (b) {
     b = Block{height: 0, prev: "", ts: cfg.genesis_ts, signer: "", entries: []Entry{}, hash: genesis_hash(cfg), sig: ""}
 }
 
-func chain_new(cfg) (c) {
-    c = Chain{blocks: []Block{genesis_block(cfg)}, validators: sort(cfg.validators), members: cfg.members, included: make(map[string]bool), weight: 0}
+// chain_new_into builds a genesis chain over CALLER-OWNED maps. Maps made in the main
+// goroutine are malloc-backed and survive arena_reset(), so the live chain reuses two
+// global maps (cleared on reload) while transient rebuilds run inside an arena block
+// where make(map) is arena-allocated and freed with it.
+func chain_new_into(cfg, included, byhash) (c) {
+    g := genesis_block(cfg)
+    c = Chain{heads: []Head{Head{height: 0, prev: "", ts: g.ts, signer: "", hash: g.hash, sig: "", n: 0}}, raws: []string{json(g)}, byhash: byhash, validators: sort(cfg.validators), members: cfg.members, included: included, weight: 0}
+    c.byhash[g.hash] = 0
 }
 
-func chain_tip(c) (b) { b = c.blocks[len(c.blocks) - 1] }
+func chain_new(cfg) (c) { c = chain_new_into(cfg, make(map[string]bool), make(map[string]int)) }
+
+func map_clear_sb(m) { ks := keys(m)  i := 0  while i < len(ks) { delete(m, ks[i])  i = i + 1 } }
+func map_clear_si(m) { ks := keys(m)  i := 0  while i < len(ks) { delete(m, ks[i])  i = i + 1 } }
+func map_clear_ss(m) { ks := keys(m)  i := 0  while i < len(ks) { delete(m, ks[i])  i = i + 1 } }
+
+func chain_tip(c) (h) { h = c.heads[len(c.heads) - 1] }
 
 // expected_signer: the in-turn validator for a height (validators kept sorted for determinism).
 func expected_signer(validators, height) (pub) {
@@ -113,9 +132,9 @@ func expected_signer(validators, height) (pub) {
     if len(sorted) > 0 { pub = sorted[height % len(sorted)] }
 }
 
-func block_weight(validators, b) (w) {
+func head_weight(validators, height, signer) (w) {
     w = 1
-    if expected_signer(validators, b.height) == b.signer { w = 2 }
+    if expected_signer(validators, height) == signer { w = 2 }
 }
 
 func block_seal(seedhex, prev, entries) (b) {
@@ -128,7 +147,7 @@ func block_seal(seedhex, prev, entries) (b) {
     b = Block{height: prev.height + 1, prev: prev.hash, ts: ts, signer: pub, entries: entries, hash: h, sig: sig}
 }
 
-// chain_check validates b against the tip WITHOUT mutating c. err "" = valid.
+// chain_check validates a parsed block against the tip WITHOUT mutating c. err "" = valid.
 func chain_check(c, b) (err) {
     err = ""
     tip := chain_tip(c)
@@ -150,52 +169,116 @@ func chain_check(c, b) (err) {
         if has(c.included, e.id) { err = "duplicate entry " + e.id  return }
         if has(local, e.id) { err = "duplicate entry in block " + e.id  return }
         if entry_allowed(sim, e) == false { err = "entry author not allowed " + e.id  return }
-        sim = chain_effect(sim, e)
+        sim = chain_effect(sim, e.kind, e.payload)
         local[e.id] = true
         i = i + 1
     }
 }
 
-// chain_apply appends b after chain_check passed. Mutates the included map (shared by value copies of c).
-func chain_apply(c, b) (out) {
+// chain_ingest validates a RAW block line and appends it. The parse lives in a scoped arena;
+// only the header, the entry ids and the governance effects escape as strings.
+func chain_ingest(c, line) (out, err) {
     out = c
-    i := 0
-    while i < len(b.entries) {
-        e := b.entries[i]
-        out = chain_effect(out, e)
-        out.included[e.id] = true
-        i = i + 1
+    err = ""
+    hdr := ""
+    ids := ""
+    effects := ""
+    arena {
+        b := parse(line, Block{})
+        e := chain_check(c, b)
+        err = escape(e)
+        if len(e) == 0 {
+            hdr = escape(str(b.height) + "|" + b.prev + "|" + str(b.ts) + "|" + b.signer + "|" + b.hash + "|" + b.sig + "|" + str(len(b.entries)))
+            idl := []string{}
+            efl := []string{}
+            i := 0
+            while i < len(b.entries) {
+                idl = append(idl, b.entries[i].id)
+                if is_gov_kind(b.entries[i].kind) { efl = append(efl, b.entries[i].kind + ":" + b.entries[i].payload) }
+                i = i + 1
+            }
+            ids = escape(join(idl, ","))
+            effects = escape(join(efl, ","))
+        }
     }
-    out.weight = out.weight + block_weight(c.validators, b)
-    out.blocks = append(out.blocks, b)
+    if len(err) > 0 { return }
+    f := split(hdr, "|")
+    h := Head{height: parse_int(f[0]), prev: f[1], ts: parse_int(f[2]), signer: f[3], hash: f[4], sig: f[5], n: parse_int(f[6])}
+    idp := split(ids, ",")
+    k := 0
+    while k < len(idp) { if len(idp[k]) > 0 { out.included[idp[k]] = true }  k = k + 1 }
+    if len(effects) > 0 {
+        efp := split(effects, ",")
+        m := 0
+        while m < len(efp) {
+            colon := index(efp[m], ":")
+            if colon > 0 { out = chain_effect(out, substr(efp[m], 0, colon), substr(efp[m], colon + 1, len(efp[m]))) }
+            m = m + 1
+        }
+    }
+    out.weight = out.weight + head_weight(c.validators, h.height, h.signer)
+    out.heads = append(out.heads, h)
+    out.raws = append(out.raws, line)
+    out.byhash[h.hash] = h.height
 }
 
-// chain_rebuild replays blocks (index 0 must be a genesis matching cfg) into a fresh Chain.
+// raw_head: height|prev|hash of a raw block line, without keeping the parse.
+func raw_head(line) (height, prev, hash) {
+    height = -1
+    prev = ""
+    hash = ""
+    arena {
+        b := parse(line, Block{})
+        height = b.height
+        prev = escape(b.prev)
+        hash = escape(b.hash)
+    }
+}
+
+// chain_rebuild replays raw lines (index 0 must be a genesis matching cfg) into a fresh Chain.
 // Returns the chain, the number of blocks accepted, and the first error ("" if all applied).
-func chain_rebuild(cfg, blocks) (c, n, err) {
-    c = chain_new(cfg)
+func chain_rebuild(cfg, raws) (c, n, err) {
+    c, n, err = chain_rebuild_into(cfg, raws, make(map[string]bool), make(map[string]int))
+}
+
+func chain_rebuild_into(cfg, raws, included, byhash) (c, n, err) {
+    c = chain_new_into(cfg, included, byhash)
     n = 0
     err = ""
-    if len(blocks) == 0 { return }
-    if blocks[0].hash != c.blocks[0].hash { err = "genesis mismatch"  return }
+    if len(raws) == 0 { return }
+    gh0, gp0, ghash := raw_head(raws[0])
+    if ghash != c.heads[0].hash { err = "genesis mismatch"  return }
     n = 1
     i := 1
-    while i < len(blocks) {
-        e := chain_check(c, blocks[i])
-        if len(e) > 0 { err = "block " + str(blocks[i].height) + ": " + e  return }
-        c = chain_apply(c, blocks[i])
+    while i < len(raws) {
+        o, e := chain_ingest(c, raws[i])
+        if len(e) > 0 { err = "block " + str(i) + ": " + e  return }
+        c = o
         n = n + 1
         i = i + 1
     }
 }
 
-// chain_better: does candidate win fork choice over current?
-func chain_better(cand, cur) (ok) {
+// chain_better: does a candidate (weight, tip hash) win fork choice over current?
+func chain_better(cweight, ctip, cur) (ok) {
     ok = false
-    if cand.weight > cur.weight { ok = true  return }
-    if cand.weight == cur.weight {
-        ct := chain_tip(cand)
+    if cweight > cur.weight { ok = true  return }
+    if cweight == cur.weight {
         rt := chain_tip(cur)
-        if ct.hash != rt.hash && ct.hash < rt.hash { ok = true }
+        if ctip != rt.hash && ctip < rt.hash { ok = true }
+    }
+}
+
+// chain_judge validates a candidate raw list inside an arena and returns only scalars:
+// (err, weight, tip hash) — nothing parsed survives the block.
+func chain_judge(cfg, raws) (err, weight, tiphash) {
+    err = ""
+    weight = 0
+    tiphash = ""
+    arena {
+        c, applied, e := chain_rebuild(cfg, raws)
+        err = escape(e)
+        weight = c.weight
+        tiphash = escape(chain_tip(c).hash)
     }
 }

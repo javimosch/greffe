@@ -5,7 +5,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 N=${1:-2000}; P=${2:-20}
 T="${TMPDIR:-/tmp}/greffe-bench-$$"; mkdir -p "$T"
-G=./greffe; PA=7541; PB=7542
+G=${GREFFE_BIN:-./greffe}; PA=7541; PB=7542
 PR=7543; R=""
 if [[ "${RELAY:-0}" == 1 ]]; then
   # relay topology: a and b are NAT'd validators that only talk through the relay

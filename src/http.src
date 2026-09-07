@@ -38,50 +38,74 @@ func node_status(n) (st) {
     role := "full"
     if node_is_validator(n) { role = "validator" }
     if n.cfg.relay { role = "relay" }
-    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.blocks[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
+    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.heads[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
 }
 
-func rec_of(b, e, tipheight) (r) {
-    r = Rec{height: b.height, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: tipheight - b.height + 1}
+// rec_json renders the entries of one raw block as Rec JSON objects (parse scoped to an arena).
+func rec_json(raw, kind, tipheight, limit) (out, count) {
+    out = ""
+    count = 0
+    arena {
+        b := parse(raw, Block{})
+        xs := []string{}
+        j := 0
+        while j < len(b.entries) && len(xs) < limit {
+            e := b.entries[j]
+            if len(kind) == 0 || e.kind == kind {
+                xs = append(xs, json(Rec{height: b.height, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: tipheight - b.height + 1}))
+            }
+            j = j + 1
+        }
+        count = len(xs)
+        out = escape(join(xs, ","))
+    }
 }
 
-func entries_list(n, kind, from, limit) (recs) {
-    recs = []Rec{}
+func entries_json(n, kind, from, limit) (s) {
+    parts := []string{}
     tip := chain_tip(n.chain)
+    total := 0
     i := from
     if i < 1 { i = 1 }
-    while i < len(n.chain.blocks) && len(recs) < limit {
-        b := n.chain.blocks[i]
-        j := 0
-        while j < len(b.entries) && len(recs) < limit {
-            e := b.entries[j]
-            if len(kind) == 0 || e.kind == kind { recs = append(recs, rec_of(b, e, tip.height)) }
-            j = j + 1
+    needle := "\"kind\":" + json(kind)
+    while i < len(n.chain.raws) && total < limit {
+        if len(kind) == 0 || contains(n.chain.raws[i], needle) {
+            chunk, c := rec_json(n.chain.raws[i], kind, tip.height, limit - total)
+            if c > 0 { parts = append(parts, chunk)  total = total + c }
         }
         i = i + 1
     }
+    s = "[" + join(parts, ",") + "]"
 }
 
-func entry_find(n, id) (r, found) {
-    found = false
+// entry_find_json: one entry by id as Rec JSON ("" if unknown); pending entries have height -1.
+func entry_find_json(n, id) (s) {
+    s = ""
+    if len(id) != 64 { return }
     tip := chain_tip(n.chain)
-    i := len(n.chain.blocks) - 1
-    while i >= 1 && found == false {
-        b := n.chain.blocks[i]
-        j := 0
-        while j < len(b.entries) {
-            if b.entries[j].id == id { r = rec_of(b, b.entries[j], tip.height)  found = true }
-            j = j + 1
+    i := len(n.chain.raws) - 1
+    while i >= 1 && len(s) == 0 {
+        if contains(n.chain.raws[i], id) {
+            arena {
+                b := parse(n.chain.raws[i], Block{})
+                j := 0
+                while j < len(b.entries) {
+                    if b.entries[j].id == id {
+                        e := b.entries[j]
+                        s = escape(json(Rec{height: b.height, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: tip.height - b.height + 1}))
+                    }
+                    j = j + 1
+                }
+            }
         }
         i = i - 1
     }
-    if found { return }
+    if len(s) > 0 { return }
     k := 0
     while k < len(n.pending) {
         if n.pending[k].id == id {
-            e := n.pending[k]
-            r = Rec{height: -1, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: 0}
-            found = true
+            e2 := n.pending[k]
+            s = json(Rec{height: -1, id: e2.id, author: e2.author, ts: e2.ts, kind: e2.kind, payload: e2.payload, sig: e2.sig, confirmations: 0})
         }
         k = k + 1
     }
@@ -114,8 +138,8 @@ func handle_http(n, req) (out, res) {
     if req.method == "GET" && p == "/peers" { res = http_json("200 OK", json(out.peers))  return }
     if req.method == "GET" && p == "/pending" { res = http_json("200 OK", json(out.pending))  return }
     if req.method == "GET" && p == "/verify" {
-        c, applied, err := chain_rebuild(out.cfg, out.chain.blocks)
-        vr := VerifyResult{ok: len(err) == 0 && applied == len(out.chain.blocks), height: applied - 1, weight: c.weight, error: err}
+        err, w, th := chain_judge(out.cfg, out.chain.raws)
+        vr := VerifyResult{ok: len(err) == 0 && th == chain_tip(out.chain).hash, height: chain_tip(out.chain).height, weight: w, error: err}
         res = http_json("200 OK", json(vr))
         return
     }
@@ -124,25 +148,25 @@ func handle_http(n, req) (out, res) {
         from := qint(req, "from", tip.height - 10)
         limit := qint(req, "limit", 100)
         if limit > 500 { limit = 500 }
-        res = http_json("200 OK", json(blocks_from(out, from, limit)))
+        res = http_json("200 OK", "[" + join(raws_from(out, from, limit), ",") + "]")
         return
     }
     if req.method == "GET" && has_prefix(p, "/blocks/") {
         h := parse_int(param(p, "/blocks/"))
-        if h < 0 || h >= len(out.chain.blocks) { res = http_error("404 Not Found", "no block at height " + str(h))  return }
-        res = http_json("200 OK", json(out.chain.blocks[h]))
+        if h < 0 || h >= len(out.chain.raws) { res = http_error("404 Not Found", "no block at height " + str(h))  return }
+        res = http_json("200 OK", out.chain.raws[h])
         return
     }
     if req.method == "GET" && p == "/entries" {
         limit := qint(req, "limit", 100)
         if limit > 1000 { limit = 1000 }
-        res = http_json("200 OK", json(entries_list(out, query(req, "kind"), qint(req, "from", 1), limit)))
+        res = http_json("200 OK", entries_json(out, query(req, "kind"), qint(req, "from", 1), limit))
         return
     }
     if req.method == "GET" && has_prefix(p, "/entries/") {
-        r, found := entry_find(out, param(p, "/entries/"))
-        if found == false { res = http_error("404 Not Found", "unknown entry")  return }
-        res = http_json("200 OK", json(r))
+        rj := entry_find_json(out, param(p, "/entries/"))
+        if len(rj) == 0 { res = http_error("404 Not Found", "unknown entry")  return }
+        res = http_json("200 OK", rj)
         return
     }
     if req.method == "POST" && p == "/entries" {
@@ -152,7 +176,7 @@ func handle_http(n, req) (out, res) {
         out = o
         if ok == false { res = http_error("400 Bad Request", reason)  return }
         store_append_pending(out.datadir, e)
-        node_broadcast(out, json(Msg{t: "entry", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: e, block: Block{}, err: ""}))
+        node_broadcast(out, entry_line(out, e))
         res = http_json("201 Created", json(PutResult{id: e.id, status: "pending", height: -1}))
         return
     }

@@ -1,6 +1,6 @@
 // greffe — CLI: agent-first (JSON on stdout, errors as JSON on stderr, exit 0 ok / 1 error / 2 usage / 90 verify failed).
 
-func greffe_version() (v) { v = "0.1.0" }
+func greffe_version() (v) { v = "0.2.0" }
 
 func out_ok(s) { println(s)  flush() }
 
@@ -119,7 +119,7 @@ func cmd_init(fs) {
     if len(cfg.validators) == 0 { cfg.validators = []string{pub} }
     if store_save_seed(dir, seedhex) == false { out_fail("cannot write " + store_key_path(dir), 1) }
     if store_save_config(dir, cfg) == false { out_fail("cannot write " + store_config_path(dir), 1) }
-    store_rewrite_blocks(dir, []Block{genesis_block(cfg)})
+    store_rewrite_raws(dir, []string{json(genesis_block(cfg))})
     role := "full"
     if is_in(cfg.validators, pub) { role = "validator" }
     if cfg.relay { role = "relay" }
