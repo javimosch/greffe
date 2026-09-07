@@ -36,7 +36,7 @@ for w in $(seq 1 $P); do
   ( d="$T/a"; [[ $((w % 2)) == 0 ]] && d="$T/b"
     for i in $(seq 1 $per); do $G put --data "$d" --kind bench --payload "{\"w\":$w,\"i\":$i,\"pad\":\"$(head -c 200 /dev/zero | tr '\0' x)\"}" >/dev/null 2>&1; done ) &
 done
-wait $(jobs -p | grep -v -e $A -e $B -e $S)
+wait $(jobs -p | grep -v -e "^$A$" -e "^$B$" -e "^$S$" ${R:+-e "^$R$"})
 echo "writes done in $(( $(date +%s) - start ))s; draining..."
 until [[ $(curl -s http://127.0.0.1:$PA/status | python3 -c "import sys,json; print(json.load(sys.stdin)['pending'])") == 0 ]]; do sleep 2; done
 sleep 12   # idle tail: does RSS settle?
