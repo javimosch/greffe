@@ -71,6 +71,9 @@ greffe verify                                         # exit 0 ok / 90 broken
 greffe init --relay --ui ...                          # relay with the public explorer at /ui
 ```
 
+Server-side apps that should record facts with a node's own key (a website, a bot) get an authenticated
+`POST /put {kind,payload}` when the node is started with `--put-token` (off otherwise).
+
 Every command prints JSON; `greffe guide` or `GET /` explains the HTTP API
 (`/status /peers /blocks /entries?kind=&author= /pending /verify`, `POST /entries`, `/ui`).
 

@@ -7,6 +7,8 @@ type Rec struct { height int  id string  author string  ts int  kind string  pay
 
 type PutResult struct { id string  status string  height int }
 
+type PutReq struct { kind string  payload string }
+
 type VerifyResult struct { ok bool  height int  weight int  error string }
 
 func http_json(status, body) (s) {
@@ -134,6 +136,7 @@ func guide_text() (s) {
     s = s + "GET  /entries/<id>               one entry (height -1 = still pending)\n"
     s = s + "GET  /pending                    entries waiting to be sealed\n"
     s = s + "POST /entries  {id,author,ts,kind,payload,sig}   submit a signed entry (201 -> pending)\n"
+    s = s + "POST /put      {kind,payload} + Authorization: Bearer <put_token>   sign with this node's key (server-side apps; off unless put_token is set)\n"
     s = s + "GET  /verify                     re-verify every block and signature from genesis\n"
     s = s + "GET  /health                     ok\n\n"
     s = s + "Rate limit: " + str(g_ctr["rate_limit"]) + " requests per client IP per 10 s (HTTP 429 / peer message 'rate limited').\n"
@@ -181,6 +184,23 @@ func handle_http(n, req) (out, res) {
         rj := entry_find_json(out, param(p, "/entries/"))
         if len(rj) == 0 { res = http_error("404 Not Found", "unknown entry")  return }
         res = http_json("200 OK", rj)
+        return
+    }
+    if req.method == "POST" && p == "/put" {
+        // a trusted server-side app records a fact with THIS node's key (Bearer put_token)
+        if len(out.cfg.put_token) < 16 { res = http_error("404 Not Found", "put endpoint disabled (no put_token)")  return }
+        if header(req, "authorization") != "Bearer " + out.cfg.put_token { res = http_error("401 Unauthorized", "bad token")  return }
+        if len(req.body) == 0 { res = http_error("400 Bad Request", "empty body")  return }
+        pr := parse(req.body, PutReq{})
+        if len(pr.kind) == 0 { res = http_error("400 Bad Request", "kind is required")  return }
+        if len(pr.payload) > 65536 { res = http_error("400 Bad Request", "payload too large")  return }
+        e2 := entry_make(out.seedhex, pr.kind, pr.payload)
+        o3, ok3, reason3 := pending_accept(out, e2)
+        out = o3
+        if ok3 == false { res = http_error("400 Bad Request", reason3)  return }
+        store_append_pending(out.datadir, e2)
+        node_broadcast(out, entry_line(out, e2))
+        res = http_json("201 Created", json(PutResult{id: e2.id, status: "pending", height: -1}))
         return
     }
     if req.method == "POST" && p == "/entries" {
