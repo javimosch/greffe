@@ -1,6 +1,6 @@
 // greffe — CLI: agent-first (JSON on stdout, errors as JSON on stderr, exit 0 ok / 1 error / 2 usage / 90 verify failed).
 
-func greffe_version() (v) { v = "0.2.0" }
+func greffe_version() (v) { v = "0.3.0" }
 
 func out_ok(s) { println(s)  flush() }
 
@@ -51,6 +51,8 @@ func cli_flags(prog) (fs) {
     fs = flag_bool(fs, "force", "f", "init: overwrite an existing data directory")
     fs = flag_bool(fs, "relay", "", "init: this node is a public relay (accepts many NAT'd subscribers; no key power)")
     fs = flag_bool(fs, "nat", "", "init: this node cannot be dialled; it subscribes to its peers (relays) instead")
+    fs = flag_bool(fs, "ui", "", "init: serve the read-only public explorer at /ui (opt-in)")
+    fs = flag_int(fs, "rate-limit", "", "300", "init: max requests per client IP per 10 s (0 = unlimited)")
 }
 
 func node_url(fs) (u) {
@@ -83,7 +85,7 @@ func cmd_init(fs) {
     mkdir(dir)
     seedhex := to_hex(rand_bytes(32))
     pub := to_hex(ed25519_pub(from_hex(seedhex)))
-    cfg := Config{name: flag_get(fs, "name"), genesis_ts: flag_int_val(fs, "genesis-ts"), validators: csv_list(flag_get(fs, "validators")), members: []string{}, peers: csv_list(flag_get(fs, "peers")), port: flag_int_val(fs, "port"), block_interval: flag_int_val(fs, "block-interval"), sync_interval: flag_int_val(fs, "sync-interval"), relay: flag_on(fs, "relay"), nat: flag_on(fs, "nat")}
+    cfg := Config{name: flag_get(fs, "name"), genesis_ts: flag_int_val(fs, "genesis-ts"), validators: csv_list(flag_get(fs, "validators")), members: []string{}, peers: csv_list(flag_get(fs, "peers")), port: flag_int_val(fs, "port"), block_interval: flag_int_val(fs, "block-interval"), sync_interval: flag_int_val(fs, "sync-interval"), relay: flag_on(fs, "relay"), nat: flag_on(fs, "nat"), ui: flag_on(fs, "ui"), rate_limit: flag_int_val(fs, "rate-limit")}
     joinurl := flag_get(fs, "join")
     if len(joinurl) > 0 {
         status, body, err := http_get(joinurl + "/status")
@@ -124,6 +126,7 @@ func cmd_init(fs) {
     if is_in(cfg.validators, pub) { role = "validator" }
     if cfg.relay { role = "relay" }
     if cfg.nat { role = role + "+nat" }
+    if cfg.ui { role = role + "+ui" }
     out_ok("{\"data\":" + json(dir) + ",\"pub\":\"" + pub + "\",\"role\":\"" + role + "\",\"name\":" + json(cfg.name) + ",\"genesis\":\"" + genesis_hash(cfg) + "\",\"port\":" + str(cfg.port) + ",\"peers\":" + json(cfg.peers) + "}")
 }
 

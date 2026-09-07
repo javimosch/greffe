@@ -130,6 +130,12 @@ greffe verify                                    # exit 0 ok / 90 broken</code><
 </section>
 
 <section>
+  <h2>A public ledger needs a public window</h2>
+  <p>Any node can serve a read-only explorer at <code>/ui</code> — opt-in with <code>greffe init --ui</code>. Overview, blocks, entries with kind and author filters, a governance view of who was admitted or removed and by whom, the pending queue, peers, and a button that re-verifies the whole record from genesis on that node. It is one page baked into the binary, talking to the same JSON API agents use; writes stay in the CLI, where the keys are. Public relays keep a per-IP rate limit (300 requests per 10 s by default) so an explorer on the open internet stays cheap to run.</p>
+  <p><a href="http://188.245.71.48:7420/ui">Live explorer on the reference relay</a> — the federation used to develop greffe, warts and all.</p>
+</section>
+
+<section>
   <h2>Gentle on the machines it runs on</h2>
   <p>machin keeps a per-goroutine arena, which means a long-running single-actor loop must manage its own memory. greffe holds blocks as raw JSON lines plus small headers, parses entries on demand inside scoped arenas, and resets its arena when resident memory grows, rebuilding state from disk. The benchmark that found the original leak is in the repo.</p>
   <table>
@@ -143,7 +149,7 @@ greffe verify                                    # exit 0 ok / 90 broken</code><
 <section>
   <h2>What is verified, and what is not</h2>
   <p><code>test.sh</code> covers sealing, sync, the membership gate, grants, two-validator round-robin, partition catch-up and restart persistence. <code>test-relay.sh</code> covers subscriptions, relay failover, a no-relay hold, relay recovery and fork convergence through relays. <code>machin check</code> reports zero data-race diagnostics: one event loop owns all state.</p>
-  <p>Not yet: TLS between peers (use Tailscale or WireGuard), per-IP rate limits on public relays, per-author quotas, pruning of old blocks from memory.</p>
+  <p>Not yet: TLS between peers (use Tailscale or WireGuard), per-author quotas, pruning of old blocks from memory.</p>
 </section>
 
 <footer>

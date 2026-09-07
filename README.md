@@ -34,6 +34,13 @@ See [docs/VISION.md](docs/VISION.md) for the north star and principles.
   cannot be dialled: it advertises no port, keeps one long-lived subscription per relay for
   pushed blocks/entries, and pulls/pushes over its own outbound dials. Relays sync with each
   other like any peers; fork choice reconciles them, so they need no coordination.
+- **Public explorer (opt-in)**: `greffe init --ui` (or `"ui": true`) serves a read-only explorer
+  at `/ui` on the same port — overview, blocks, entries with kind/author filters, a governance
+  view, pending, peers, and a "verify from genesis" button. It is one HTML page baked into the
+  binary that calls the JSON API; writes stay in the CLI, where the keys are.
+- **Rate limit**: `rate_limit` requests per client IP per 10 s (default 300, loopback exempt);
+  over the limit a client gets HTTP 429 or a `rate limited` peer reply. Public relays should
+  keep it on.
 - **Memory**: blocks are held as raw JSON lines + small headers; entries are parsed on demand
   inside scoped arenas, and the single-actor loop resets its arena when RSS grows (state is
   rebuilt from disk). A node stays at a few MB idle and tens of MB under sustained writes.
@@ -57,10 +64,11 @@ greffe grant validator <pub>      # or: greffe grant member <pub>
 greffe put --kind decision --payload '{"title":"adopt greffe"}' --wait
 greffe entries --kind decision
 greffe verify                                         # exit 0 ok / 90 broken
+greffe init --relay --ui ...                          # relay with the public explorer at /ui
 ```
 
 Every command prints JSON; `greffe guide` or `GET /` explains the HTTP API
-(`/status /peers /blocks /entries /pending /verify`, `POST /entries`).
+(`/status /peers /blocks /entries?kind=&author= /pending /verify`, `POST /entries`, `/ui`).
 
 ## Files
 
@@ -75,11 +83,12 @@ anywhere.
 
 ## Status
 
-v0.2.0 — proof of concept live on four nodes: two NAT'd validators (a laptop, an LXC
+v0.3.0 — proof of concept live on four nodes: two NAT'd validators (a laptop, an LXC
 container) that only meet through two public relays (Hetzner, DigitalOcean). `./test.sh`
 covers seal, sync, the membership gate, grants, two-validator round-robin, partition
 catch-up and restart persistence; `./test-relay.sh` covers subscriptions, relay failover,
 no-relay hold, relay recovery and fork convergence through relays; `./bench.sh` (and
 `RELAY=1 ./bench.sh`) drive 2,000 writes and record RSS to bench.csv.
-Not yet: TLS between peers (use Tailscale/WireGuard), per-IP rate limits on relays,
-per-author entry quotas, pruning of old blocks from memory.
+`test.sh` also covers the opt-in explorer, the entry filters and the rate limit.
+Not yet: TLS between peers (use Tailscale/WireGuard), per-author entry quotas, pruning of
+old blocks from memory.

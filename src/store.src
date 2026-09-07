@@ -13,6 +13,7 @@ func store_load_config(dir) (cfg, ok) {
     if cfg.port == 0 { cfg.port = 7420 }
     if cfg.block_interval == 0 { cfg.block_interval = 5 }
     if cfg.sync_interval == 0 { cfg.sync_interval = 10 }
+    if cfg.rate_limit == 0 { cfg.rate_limit = 300 }
     ok = len(cfg.name) > 0 && len(cfg.validators) > 0
 }
 

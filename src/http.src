@@ -1,7 +1,7 @@
 // greffe — HTTP API (same port as the peer protocol). JSON everywhere, no auth:
 // the chain is public by design; writes need a valid signature from a member.
 
-type Status struct { tool string  version string  name string  pub string  role string  nat bool  subscribers int  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  gcs int  uptime int  port int }
+type Status struct { tool string  version string  name string  pub string  role string  nat bool  ui bool  rate_limit int  subscribers int  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  gcs int  uptime int  port int }
 
 type Rec struct { height int  id string  author string  ts int  kind string  payload string  sig string  confirmations int }
 
@@ -15,6 +15,10 @@ func http_json(status, body) (s) {
 
 func http_text(status, body) (s) {
     s = "HTTP/1.1 " + status + "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+func http_html(status, body) (s) {
+    s = "HTTP/1.1 " + status + "\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + str(len(body)) + "\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'\r\nConnection: close\r\n\r\n" + body
 }
 
 func http_error(status, msg) (s) {
@@ -38,11 +42,11 @@ func node_status(n) (st) {
     role := "full"
     if node_is_validator(n) { role = "validator" }
     if n.cfg.relay { role = "relay" }
-    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.heads[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
+    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, ui: n.cfg.ui, rate_limit: n.cfg.rate_limit, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.heads[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
 }
 
 // rec_json renders the entries of one raw block as Rec JSON objects (parse scoped to an arena).
-func rec_json(raw, kind, tipheight, limit) (out, count) {
+func rec_json(raw, kind, author, tipheight, limit) (out, count) {
     out = ""
     count = 0
     arena {
@@ -51,7 +55,9 @@ func rec_json(raw, kind, tipheight, limit) (out, count) {
         j := 0
         while j < len(b.entries) && len(xs) < limit {
             e := b.entries[j]
-            if len(kind) == 0 || e.kind == kind {
+            want := len(kind) == 0 || e.kind == kind || (kind == "gov" && is_gov_kind(e.kind))
+            if want && len(author) > 0 { want = e.author == author }
+            if want {
                 xs = append(xs, json(Rec{height: b.height, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: tipheight - b.height + 1}))
             }
             j = j + 1
@@ -61,16 +67,21 @@ func rec_json(raw, kind, tipheight, limit) (out, count) {
     }
 }
 
-func entries_json(n, kind, from, limit) (s) {
+func entries_json(n, kind, author, from, limit) (s) {
     parts := []string{}
     tip := chain_tip(n.chain)
     total := 0
     i := from
     if i < 1 { i = 1 }
     needle := "\"kind\":" + json(kind)
+    if kind == "gov" { needle = "\"kind\":\"validator." }
+    needle2 := "\"kind\":\"member."
     while i < len(n.chain.raws) && total < limit {
-        if len(kind) == 0 || contains(n.chain.raws[i], needle) {
-            chunk, c := rec_json(n.chain.raws[i], kind, tip.height, limit - total)
+        raw := n.chain.raws[i]
+        hit := len(kind) == 0 || contains(raw, needle) || (kind == "gov" && contains(raw, needle2))
+        if hit && len(author) > 0 { hit = contains(raw, author) }
+        if hit {
+            chunk, c := rec_json(raw, kind, author, tip.height, limit - total)
             if c > 0 { parts = append(parts, chunk)  total = total + c }
         }
         i = i + 1
@@ -118,12 +129,14 @@ func guide_text() (s) {
     s = s + "GET  /peers                      known peers with height/weight/last seen\n"
     s = s + "GET  /blocks?from=N&limit=M      blocks (default from tip-10)\n"
     s = s + "GET  /blocks/N                   one block\n"
-    s = s + "GET  /entries?kind=K&from=H&limit=M   entries in chain order\n"
+    s = s + "GET  /entries?kind=K&author=PUB&from=H&limit=M   entries in chain order (kind=gov -> governance only)\n"
+    s = s + "GET  /ui                         read-only public explorer (when enabled with ui:true)\n"
     s = s + "GET  /entries/<id>               one entry (height -1 = still pending)\n"
     s = s + "GET  /pending                    entries waiting to be sealed\n"
     s = s + "POST /entries  {id,author,ts,kind,payload,sig}   submit a signed entry (201 -> pending)\n"
     s = s + "GET  /verify                     re-verify every block and signature from genesis\n"
     s = s + "GET  /health                     ok\n\n"
+    s = s + "Rate limit: " + str(g_ctr["rate_limit"]) + " requests per client IP per 10 s (HTTP 429 / peer message 'rate limited').\n"
     s = s + "entry.id = sha256(author|ts|kind|payload); sig = ed25519(seed, id). Governance kinds (validator author only): validator.add / validator.remove / member.add / member.remove with payload = public key hex.\n"
     s = s + "CLI: greffe status | put --kind K --payload P | entries | verify | grant validator|member <pub> | guide\n"
 }
@@ -131,6 +144,7 @@ func guide_text() (s) {
 func handle_http(n, req) (out, res) {
     out = n
     p := path_only(req.path)
+    if req.method == "GET" && out.cfg.ui && (p == "/ui" || (p == "/" && contains(header(req, "accept"), "text/html"))) { res = http_html("200 OK", ui_html())  return }
     if req.method == "GET" && (p == "/" || p == "/llms.txt" || p == "/guide") { res = http_text("200 OK", guide_text())  return }
     if req.method == "GET" && p == "/health" { res = http_json("200 OK", "{\"ok\":true}")  return }
     if req.method == "GET" && p == "/status" { res = http_json("200 OK", json(node_status(out)))  return }
@@ -160,7 +174,7 @@ func handle_http(n, req) (out, res) {
     if req.method == "GET" && p == "/entries" {
         limit := qint(req, "limit", 100)
         if limit > 1000 { limit = 1000 }
-        res = http_json("200 OK", entries_json(out, query(req, "kind"), qint(req, "from", 1), limit))
+        res = http_json("200 OK", entries_json(out, query(req, "kind"), query(req, "author"), qint(req, "from", 1), limit))
         return
     }
     if req.method == "GET" && has_prefix(p, "/entries/") {

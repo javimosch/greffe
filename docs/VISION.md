@@ -43,7 +43,8 @@ group has a handful of machines and a lot of goodwill, not a budget for infrastr
 
 1. **Anyone can verify, few need to run anything.** One static binary, one port, one command
    (`greffe verify`) re-checks every signature and hash from genesis. A member who only wants to
-   read can use any node's HTTP API; a member who wants to reinforce the record adds a machine.
+   read can open any node's explorer or its HTTP API; a member who wants to reinforce the record
+   adds a machine.
 2. **Authority is explicit and on the record.** Who may seal blocks and who may write entries is
    itself written in the chain, as signed governance entries. There is no admin panel and no
    out-of-band configuration that changes who is trusted.
@@ -90,13 +91,13 @@ When that is true and boring, greffe has done its job.
 
 1. **Confidentiality where needed**: an entry kind that carries only a hash plus a pointer, and a
    convention for encrypted payloads for members only.
-2. **Rate limits and quotas** on public relays and per author, so a hijacked member key cannot
-   flood the record.
+2. **Per-author quotas**, so a hijacked member key cannot flood the record (per-IP rate limits
+   on relays shipped in v0.3.0).
 3. **TLS between peers** without a reverse proxy, for federations that cannot run WireGuard.
 4. **Pruning**: keep old blocks on disk only, so a ten-year-old chain still fits in a few MB of
    memory.
-5. **Readers**: a static site generator and a small viewer that turn a chain into a browsable
-   history of a group's decisions.
+5. **Readers**: each node can already serve a read-only explorer (opt-in, `/ui`); next is a
+   static export of the same view, so a group's history can be published without a node.
 6. **Multi-language guides** for the operators of associations who will never read a README in
    English.
 

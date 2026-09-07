@@ -34,6 +34,9 @@ var g_sync_anc = make(map[string]int)
 var g_side = make(map[string]string)
 var g_side_prev = make(map[string]string)
 
+// Per-client-IP request counts for the current 10 s window (cleared each window and on reload).
+var g_rl = make(map[string]int)
+
 func maps_reset() {
     map_clear_sb(g_included)
     map_clear_si(g_byhash)
@@ -44,6 +47,17 @@ func maps_reset() {
     map_clear_si(g_sync_anc)
     map_clear_ss(g_side)
     map_clear_ss(g_side_prev)
+    map_clear_si(g_rl)
+}
+
+// rate_ok: fixed 10 s window per client IP; loopback is exempt (the local CLI).
+func rate_ok(n, ip) (ok) {
+    ok = true
+    if n.cfg.rate_limit <= 0 || len(ip) == 0 || ip == "127.0.0.1" || ip == "::1" { return }
+    w := now() / 10
+    if g_ctr["rl_window"] != w { g_ctr["rl_window"] = w  map_clear_si(g_rl) }
+    g_rl[ip] = g_rl[ip] + 1
+    if g_rl[ip] > n.cfg.rate_limit { ok = false }
 }
 
 type Msg struct { t string  genesis string  height int  tip string  weight int  port int  nat int  from int  npending int  raws []string  raw string  entries []Entry  entry Entry  err string }
@@ -832,6 +846,11 @@ func ev_parse(ev) (kind, a, rest) {
 func on_in(n, fd, raw) (out) {
     out = n
     if len(raw) == 0 { close(fd)  return }
+    if rate_ok(out, peer_addr(fd)) == false {
+        if has_prefix(raw, "{") { write(fd, msg_ok("rate limited") + "\n") } else { write(fd, http_error("429 Too Many Requests", "rate limited: " + str(out.cfg.rate_limit) + " requests per 10 s per IP")) }
+        close(fd)
+        return
+    }
     if has_prefix(raw, "{\"t\":\"sub\"") {
         // a NAT'd peer subscribing: keep the socket, push announcements to it until it dies
         cap := 16
@@ -920,6 +939,7 @@ func node_serve(n) {
     n.last_sync = now() - n.cfg.sync_interval
     g_ctr["last_gc"] = now()
     g_ctr["rss_base"] = rss_kb()
+    g_ctr["rate_limit"] = n.cfg.rate_limit
     for {
         ev := <-ch
         kind, a, rest := ev_parse(ev)

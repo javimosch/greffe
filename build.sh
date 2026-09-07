@@ -5,7 +5,12 @@ cd "$(dirname "$0")"
 MACHIN="${MACHIN:-machin}"
 FRAMEWORK="${FRAMEWORK:-$HOME/ai/machin/framework}"
 [[ -f "$FRAMEWORK/flags.src" ]] || FRAMEWORK="vendor/framework"
-SRCS=("$FRAMEWORK/flags.src" "$FRAMEWORK/machweb.src" src/chain.src src/store.src src/node.src src/http.src src/cli.src src/main.src)
+python3 - <<'PY'
+html=open('ui.html').read()
+lit=html.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n').replace('\t','\\t')
+open('src/ui.src','w').write('// generated from ui.html by build.sh -- do not edit\nfunc ui_html() (s) { s = "'+lit+'" }\n')
+PY
+SRCS=("$FRAMEWORK/flags.src" "$FRAMEWORK/machweb.src" src/chain.src src/store.src src/node.src src/http.src src/ui.src src/cli.src src/main.src)
 "$MACHIN" encode "${SRCS[@]}" > greffe.mfl
 if [[ "${STATIC:-0}" == "1" ]]; then
   "$MACHIN" build greffe.mfl --static -o greffe
