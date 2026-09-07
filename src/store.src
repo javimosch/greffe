@@ -78,6 +78,14 @@ func store_load_pending(dir) (entries) {
     }
 }
 
+// store_append_pending: O(1) per new entry (the file is only rewritten on prune).
+func store_append_pending(dir, e) (ok) {
+    p := store_pending_path(dir)
+    off := file_size(p)
+    if off < 0 { off = 0 }
+    ok = write_file_at(p, off, bytes(json(e) + "\n")) >= 0
+}
+
 func store_save_pending(dir, entries) (ok) {
     lines := []string{}
     i := 0

@@ -10,7 +10,7 @@ type Entry struct { id string  author string  ts int  kind string  payload strin
 
 type Block struct { height int  prev string  ts int  signer string  entries []Entry  hash string  sig string }
 
-type Config struct { name string  genesis_ts int  validators []string  members []string  peers []string  port int  block_interval int  sync_interval int }
+type Config struct { name string  genesis_ts int  validators []string  members []string  peers []string  port int  block_interval int  sync_interval int  relay bool  nat bool }
 
 // Chain is the validated state: blocks + the sets derived from on-chain governance entries.
 type Chain struct { blocks []Block  validators []string  members []string  included map[string]bool  weight int }

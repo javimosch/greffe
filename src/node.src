@@ -12,7 +12,16 @@
 
 var g_evch = make(chan string)
 
-type Msg struct { t string  genesis string  height int  tip string  weight int  port int  from int  blocks []Block  entry Entry  block Block  err string }
+// Scalars that must outlive an arena_reset(): ints survive, computed strings do not.
+var g_ctr = make(map[string]int)
+
+// Relay side: fds of subscribed NAT'd peers (fd -> 1). Subscriber side: per-peer subscription
+// state keyed by an int hash of the address (1 = live) and the last attempt time.
+var g_subfds = make(map[int]int)
+var g_sub = make(map[int]int)
+var g_sub_ts = make(map[int]int)
+
+type Msg struct { t string  genesis string  height int  tip string  weight int  port int  nat int  from int  npending int  blocks []Block  entries []Entry  entry Entry  block Block  err string }
 
 type Peer struct { addr string  height int  weight int  seen int  fails int  source string }
 
@@ -105,6 +114,18 @@ func gr_fetch(addr, line, ch) {
     ch <- "re\t" + addr + "\t" + reply
 }
 
+// gr_announce_seq: several announce lines (joined by "\n"), one dial each, IN ORDER — used to
+// push a run of blocks to a peer that is behind and cannot dial us back (a NAT'd node feeding
+// a restarted relay).
+func gr_announce_seq(addr, joined) {
+    lines := split(joined, "\n")
+    i := 0
+    while i < len(lines) {
+        if len(lines[i]) > 0 { gr_announce(addr, lines[i]) }
+        i = i + 1
+    }
+}
+
 // gr_announce: fire-and-forget push (a new entry or block); no event comes back.
 func gr_announce(addr, line) {
     host, port := split_addr(addr)
@@ -115,6 +136,41 @@ func gr_announce(addr, line) {
         read_line_fd(fd)
         close(fd)
     }
+}
+
+// gr_subscribe: a NAT'd node's long-lived outbound link to a relay. Sends "sub", then turns
+// every pushed line into a "push" event; "subend" when the link drops.
+func gr_subscribe(addr, line, ch) {
+    host, port := split_addr(addr)
+    fd := dial(host, port)
+    if fd >= 0 {
+        socket_timeout(fd, 90000)   // relays ping every 30s; 3 missed pings = dead link
+        write(fd, line + "\n")
+        buf := ""
+        alive := true
+        while alive {
+            more := read(fd)
+            if len(more) == 0 { alive = false } else {
+                buf = buf + more
+                nl := index(buf, "\n")
+                while nl >= 0 {
+                    ch <- "push\t" + addr + "\t" + substr(buf, 0, nl)
+                    buf = substr(buf, nl + 1, len(buf))
+                    nl = index(buf, "\n")
+                }
+                if len(buf) > 8000000 { alive = false }
+            }
+        }
+        close(fd)
+    }
+    ch <- "subend\t" + addr + "\t"
+}
+
+func addr_hash(addr) (h) {
+    h = 7
+    b := bytes(addr)
+    i := 0
+    while i < len(b) { h = (h * 31 + byte_at(b, i)) % 1000000007  i = i + 1 }
 }
 
 // ---- node state ----
@@ -139,7 +195,7 @@ func node_load(dir) (n, err) {
     saved := store_load_pending(dir)
     j := 0
     while j < len(saved) { n = pending_add(n, saved[j])  j = j + 1 }
-    logmsg("loaded " + str(applied) + " blocks, weight " + str(chain.weight) + ", " + str(len(n.pending)) + " pending, " + str(len(n.peers)) + " peers")
+    if g_ctr["gcs"] == 0 { logmsg("loaded " + str(applied) + " blocks, weight " + str(chain.weight) + ", " + str(len(n.pending)) + " pending, " + str(len(n.peers)) + " peers") }
 }
 
 func node_is_validator(n) (ok) { ok = is_in(n.chain.validators, n.pub) }
@@ -219,18 +275,32 @@ func pending_prune(n) (out) {
     out.pending = keep
 }
 
-func hello_line(n) (s) {
-    tip := chain_tip(n.chain)
-    s = json(Msg{t: "hello", genesis: n.chain.blocks[0].hash, height: tip.height, tip: tip.hash, weight: n.chain.weight, port: n.cfg.port, from: 0, blocks: []Block{}, entry: Entry{}, block: Block{}, err: ""})
+// adv_port: the port we tell peers to dial back; 0 when behind NAT (nobody can).
+func adv_port(n) (p) {
+    p = n.cfg.port
+    if n.cfg.nat { p = 0 }
 }
 
-func msg_ok(err) (s) { s = json(Msg{t: "ok", genesis: "", height: 0, tip: "", weight: 0, port: 0, from: 0, blocks: []Block{}, entry: Entry{}, block: Block{}, err: err}) }
+func hello_line(n) (s) {
+    tip := chain_tip(n.chain)
+    natflag := 0
+    if n.cfg.nat { natflag = 1 }
+    s = json(Msg{t: "hello", genesis: n.chain.blocks[0].hash, height: tip.height, tip: tip.hash, weight: n.chain.weight, port: adv_port(n), nat: natflag, from: 0, npending: len(n.pending), blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""})
+}
 
+func msg_ok(err) (s) { s = json(Msg{t: "ok", genesis: "", height: 0, tip: "", weight: 0, port: 0, nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: err}) }
+
+// blocks_from pages by block count AND by total entries, so one reply never explodes parse().
 func blocks_from(n, from, limit) (bs) {
     bs = []Block{}
     i := from
     if i < 0 { i = 0 }
-    while i < len(n.chain.blocks) && len(bs) < limit { bs = append(bs, n.chain.blocks[i])  i = i + 1 }
+    total := 0
+    while i < len(n.chain.blocks) && len(bs) < limit && total < 400 {
+        bs = append(bs, n.chain.blocks[i])
+        total = total + len(n.chain.blocks[i].entries)
+        i = i + 1
+    }
 }
 
 // ---- outbound ----
@@ -243,6 +313,7 @@ func node_send(n, addr, line) (out) {
 }
 
 func node_broadcast(n, line) {
+    sub_push_all(line)
     i := 0
     while i < len(n.peers) {
         p := n.peers[i]
@@ -257,7 +328,7 @@ func want_sync(n, addr, from) (out) {
     out = n
     if from < 0 { from = 0 }
     out.sync_from[addr] = from
-    out = node_send(out, addr, json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: from, blocks: []Block{}, entry: Entry{}, block: Block{}, err: ""}))
+    out = node_send(out, addr, json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: from, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}))
 }
 
 // ---- applying blocks ----
@@ -336,13 +407,29 @@ func on_blocks(n, addr, bs) (out) {
         if changed == false { return }
     }
     // a full page means there may be more
-    if len(bs) >= 100 { out = want_sync(out, addr, chain_tip(out.chain).height) }
+    if len(bs) >= 2 { out = want_sync(out, addr, chain_tip(out.chain).height) }
 }
 
 func on_hello(n, addr, m) (out) {
     out = n
     if m.genesis != out.chain.blocks[0].hash { out = peer_mark(out, addr, m.height, m.weight, false)  return }
     out = peer_mark(out, addr, m.height, m.weight, true)
+    if m.npending > 0 && node_is_validator(out) && len(addr) > 0 && has(out.sync_from, addr) == false {
+        out = node_send(out, addr, json(Msg{t: "pending", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}))
+    }
+    tip := chain_tip(out.chain)
+    if m.weight < out.chain.weight && m.height < tip.height && m.height >= 0 && len(addr) > 0 {
+        // the peer is behind us; it may be unable to dial us (we are behind NAT), so push in order
+        if m.height < len(out.chain.blocks) && (m.height == 0 || out.chain.blocks[m.height].hash == m.tip) {
+            lines := []string{}
+            h := m.height + 1
+            while h < len(out.chain.blocks) && len(lines) < 25 {
+                lines = append(lines, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: out.chain.blocks[h], err: ""}))
+                h = h + 1
+            }
+            go gr_announce_seq(addr, join(lines, "\n"))
+        }
+    }
     if m.weight > out.chain.weight {
         out = want_sync(out, addr, chain_tip(out.chain).height)
     } else if m.weight == out.chain.weight && m.tip != chain_tip(out.chain).hash && m.tip < chain_tip(out.chain).hash {
@@ -357,7 +444,7 @@ func on_block_announce(n, addr, b) (out) {
         o, err := node_append(out, b, addr)
         if len(err) > 0 { logmsg("reject announced block " + str(b.height) + ": " + err)  return }
         out = o
-        node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: 0, blocks: []Block{}, entry: Entry{}, block: b, err: ""}))
+        node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: b, err: ""}))
         return
     }
     if b.hash == tip.hash { return }
@@ -370,7 +457,7 @@ func handle_p2p(n, raw, remote_ip) (out, resp) {
     out = n
     m := parse(raw, Msg{})
     addr := ""
-    if m.port > 0 && len(remote_ip) > 0 {
+    if m.port > 0 && len(remote_ip) > 0 && m.nat == 0 {
         addr = remote_ip + ":" + str(m.port)
         out = peer_learn(out, addr, "hello")
     }
@@ -381,14 +468,21 @@ func handle_p2p(n, raw, remote_ip) (out, resp) {
     }
     if m.genesis != out.chain.blocks[0].hash { resp = msg_ok("genesis mismatch")  return }
     if m.t == "blocks" {
-        resp = json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: m.from, blocks: blocks_from(out, m.from, 100), entry: Entry{}, block: Block{}, err: ""})
+        resp = json(Msg{t: "blocks", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: m.from, npending: 0, blocks: blocks_from(out, m.from, 100), entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""})
+        return
+    }
+    if m.t == "pending" {
+        pl := []Entry{}
+        i := 0
+        while i < len(out.pending) && len(pl) < 200 { pl = append(pl, out.pending[i])  i = i + 1 }
+        resp = json(Msg{t: "pending", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: len(out.pending), blocks: []Block{}, entries: pl, entry: Entry{}, block: Block{}, err: ""})
         return
     }
     if m.t == "entry" {
         o, ok, reason := pending_accept(out, m.entry)
         out = o
         if ok {
-            store_save_pending(out.datadir, out.pending)
+            store_append_pending(out.datadir, m.entry)
             node_broadcast(out, raw)
             resp = msg_ok("")
         } else {
@@ -404,6 +498,52 @@ func handle_p2p(n, raw, remote_ip) (out, resp) {
     resp = msg_ok("unknown message type")
 }
 
+// on_push: a line pushed by a relay over our subscription.
+func on_push(n, addr, raw) (out) {
+    out = n
+    if has_prefix(raw, "{") == false { return }
+    m := parse(raw, Msg{})
+    if m.t == "ping" { return }
+    if m.t == "hello" { out = on_hello(out, addr, m)  return }
+    if m.genesis != out.chain.blocks[0].hash { return }
+    if m.t == "block" { out = on_block_announce(out, addr, m.block)  return }
+    if m.t == "entry" {
+        o, ok, reason := pending_accept(out, m.entry)
+        out = o
+        if ok {
+            store_append_pending(out.datadir, m.entry)
+            node_broadcast(out, raw)
+        }
+    }
+}
+
+func sub_push_all(line) {
+    fds := keys(g_subfds)
+    i := 0
+    while i < len(fds) {
+        fd := fds[i]
+        if write(fd, line + "\n") < 0 { close(fd)  delete(g_subfds, fd) }
+        i = i + 1
+    }
+}
+
+func sub_maintain(n) (out) {
+    out = n
+    if out.cfg.nat == false { return }
+    t := now()
+    i := 0
+    while i < len(out.peers) {
+        p := out.peers[i]
+        h := addr_hash(p.addr)
+        if g_sub[h] != 1 && t - g_sub_ts[h] >= 15 {
+            g_sub[h] = 1
+            g_sub_ts[h] = t
+            go gr_subscribe(p.addr, json(Msg{t: "sub", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: 0, nat: 1, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}), g_evch)
+        }
+        i = i + 1
+    }
+}
+
 func on_reply(n, addr, raw) (out) {
     out = n
     out.inflight[addr] = false
@@ -415,6 +555,15 @@ func on_reply(n, addr, raw) (out) {
     m := parse(raw, Msg{})
     if m.t == "hello" { out = on_hello(out, addr, m)  return }
     if m.t == "blocks" { out = on_blocks(out, addr, m.blocks)  return }
+    if m.t == "pending" {
+        i := 0
+        while i < len(m.entries) {
+            o, ok, reason := pending_accept(out, m.entries[i])
+            out = o
+            if ok { store_append_pending(out.datadir, m.entries[i]) }
+            i = i + 1
+        }
+    }
 }
 
 // ---- sealing (proof of authority, Clique-style) ----
@@ -443,7 +592,7 @@ func try_seal(n) (out) {
     if now() - tip.ts < 1 { return }
     batch := []Entry{}
     j := 0
-    while j < len(out.pending) && len(batch) < 500 { batch = append(batch, out.pending[j])  j = j + 1 }
+    while j < len(out.pending) && len(batch) < 200 { batch = append(batch, out.pending[j])  j = j + 1 }
     b := block_seal(out.seedhex, tip, batch)
     o, err := node_append(out, b, "seal")
     if len(err) > 0 {
@@ -454,7 +603,7 @@ func try_seal(n) (out) {
     }
     out = o
     out.sealed = out.sealed + 1
-    node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: 0, blocks: []Block{}, entry: Entry{}, block: b, err: ""}))
+    node_broadcast(out, json(Msg{t: "block", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: b, err: ""}))
 }
 
 func drop_invalid_pending(n) (out) {
@@ -489,6 +638,24 @@ func on_tick(n) (out) {
             i = i + 1
         }
     }
+    if t == out.last_sync && len(out.pending) > 0 {
+        // re-announce pending entries older than two sync rounds (a relay may have been down)
+        sent := 0
+        i := 0
+        while i < len(out.pending) && sent < 50 {
+            e := out.pending[i]
+            if t - out.pend_since[e.id] >= 2 * out.cfg.sync_interval {
+                node_broadcast(out, json(Msg{t: "entry", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: e, block: Block{}, err: ""}))
+                sent = sent + 1
+            }
+            i = i + 1
+        }
+    }
+    if t - g_ctr["last_ping"] >= 30 && len(g_subfds) > 0 {
+        g_ctr["last_ping"] = t
+        sub_push_all(json(Msg{t: "ping", genesis: "", height: 0, tip: "", weight: 0, port: 0, nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: Entry{}, block: Block{}, err: ""}))
+    }
+    out = sub_maintain(out)
     out = try_seal(out)
 }
 
@@ -511,6 +678,18 @@ func ev_parse(ev) (kind, a, rest) {
 func on_in(n, fd, raw) (out) {
     out = n
     if len(raw) == 0 { close(fd)  return }
+    if has_prefix(raw, "{\"t\":\"sub\"") {
+        // a NAT'd peer subscribing: keep the socket, push announcements to it until it dies
+        cap := 16
+        if out.cfg.relay { cap = 256 }
+        if len(g_subfds) >= cap { write(fd, msg_ok("too many subscribers") + "\n")  close(fd)  return }
+        m := parse(raw, Msg{})
+        if m.genesis != out.chain.blocks[0].hash { write(fd, msg_ok("genesis mismatch") + "\n")  close(fd)  return }
+        socket_timeout(fd, 10000)
+        write(fd, hello_line(out) + "\n")
+        g_subfds[fd] = 1
+        return
+    }
     if has_prefix(raw, "{") {
         o, resp := handle_p2p(out, raw, peer_addr(fd))
         out = o
@@ -524,6 +703,54 @@ func on_in(n, fd, raw) (out) {
     close(fd)
 }
 
+// node_gc keeps a long-running single-actor loop flat: the main goroutine's arena never
+// returns, so every parsed message would otherwise live forever. At a quiescent point we
+// free the whole arena and rebuild the node from disk (chain.jsonl / pending.jsonl /
+// peers.json are the truth anyway). Cross-reset state = ints in g_ctr, the channel, fds.
+func rss_kb() (kb) {
+    // /proc files read as empty via read_file (size 0), so ask ps about our own pid ($PPID of the shell).
+    code, out, err := exec("ps -o rss= -p $PPID")
+    kb = parse_int(trim(out))
+}
+
+func node_gc(n) (out) {
+    out = n
+    g_ctr["events"] = g_ctr["events"] + 1
+    if g_ctr["events"] % 50 != 0 { return }
+    rss := rss_kb()
+    if len(env("GREFFE_DEBUG")) > 0 && g_ctr["events"] % 100 == 0 {
+        logmsg("mem events=" + str(g_ctr["events"]) + " rss=" + str(rss) + "kB in=" + str(g_ctr["ev_in"]) + " re=" + str(g_ctr["ev_re"]) + " push=" + str(g_ctr["ev_push"]) + " pending=" + str(len(out.pending)) + " height=" + str(chain_tip(out.chain).height))
+    }
+    grown := rss - g_ctr["rss_base"]
+    idle := now() - g_ctr["last_gc"] >= 60
+    if grown < 32768 && (idle == false || grown < 4096) && g_ctr["events"] < 5000 { return }
+    if out_inflight_count(out) > 0 && grown < 131072 { return }
+    g_ctr["sealed"] = out.sealed
+    g_ctr["reorgs"] = out.reorgs
+    g_ctr["started"] = out.started
+    g_ctr["last_sync"] = out.last_sync
+    g_ctr["gcs"] = g_ctr["gcs"] + 1
+    g_ctr["events"] = 0
+    g_ctr["last_gc"] = now()
+    arena_reset()
+    fresh, err := node_load(data_dir_from_argv())
+    if len(err) > 0 { logmsg("gc reload failed: " + err)  exit(3) }
+    out = fresh
+    out.sealed = g_ctr["sealed"]
+    out.reorgs = g_ctr["reorgs"]
+    out.started = g_ctr["started"]
+    out.last_sync = g_ctr["last_sync"]
+    g_ctr["rss_base"] = rss_kb()
+    if len(env("GREFFE_DEBUG")) > 0 { logmsg("gc #" + str(g_ctr["gcs"]) + " rss " + str(rss) + "kB -> " + str(g_ctr["rss_base"]) + "kB") }
+}
+
+func out_inflight_count(n) (c) {
+    c = 0
+    ks := keys(n.inflight)
+    i := 0
+    while i < len(ks) { if n.inflight[ks[i]] { c = c + 1 }  i = i + 1 }
+}
+
 func node_serve(n) {
     ch := g_evch
     srv := listen(n.cfg.port)
@@ -532,13 +759,20 @@ func node_serve(n) {
     go gr_ticker(ch)
     role := "full node"
     if node_is_validator(n) { role = "validator" }
+    if n.cfg.relay { role = "relay" }
+    if n.cfg.nat { role = role + " (behind NAT)" }
     logmsg("greffe " + greffe_version() + " '" + n.cfg.name + "' " + role + " " + substr(n.pub, 0, 12) + " listening on :" + str(n.cfg.port) + " height " + str(chain_tip(n.chain).height))
     n.last_sync = now() - n.cfg.sync_interval
+    g_ctr["last_gc"] = now()
+    g_ctr["rss_base"] = rss_kb()
     for {
         ev := <-ch
         kind, a, rest := ev_parse(ev)
-        if kind == "tick" { n = on_tick(n) }
-        if kind == "in" { n = on_in(n, parse_int(a), rest) }
-        if kind == "re" { n = on_reply(n, a, rest) }
+        if kind == "tick" { n = on_tick(n)  g_ctr["ev_tick"] = g_ctr["ev_tick"] + 1 }
+        if kind == "in" { n = on_in(n, parse_int(a), rest)  g_ctr["ev_in"] = g_ctr["ev_in"] + 1 }
+        if kind == "re" { n = on_reply(n, a, rest)  g_ctr["ev_re"] = g_ctr["ev_re"] + 1 }
+        if kind == "push" { n = on_push(n, a, rest)  g_ctr["ev_push"] = g_ctr["ev_push"] + 1 }
+        if kind == "subend" { g_sub[addr_hash(a)] = 0  logmsg("subscription to " + a + " dropped") }
+        n = node_gc(n)
     }
 }

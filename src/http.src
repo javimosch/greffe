@@ -1,7 +1,7 @@
 // greffe — HTTP API (same port as the peer protocol). JSON everywhere, no auth:
 // the chain is public by design; writes need a valid signature from a member.
 
-type Status struct { tool string  version string  name string  pub string  role string  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  uptime int  port int }
+type Status struct { tool string  version string  name string  pub string  role string  nat bool  subscribers int  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  gcs int  uptime int  port int }
 
 type Rec struct { height int  id string  author string  ts int  kind string  payload string  sig string  confirmations int }
 
@@ -37,7 +37,8 @@ func node_status(n) (st) {
     tip := chain_tip(n.chain)
     role := "full"
     if node_is_validator(n) { role = "validator" }
-    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.blocks[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, uptime: now() - n.started, port: n.cfg.port}
+    if n.cfg.relay { role = "relay" }
+    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.blocks[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
 }
 
 func rec_of(b, e, tipheight) (r) {
@@ -150,8 +151,8 @@ func handle_http(n, req) (out, res) {
         o, ok, reason := pending_accept(out, e)
         out = o
         if ok == false { res = http_error("400 Bad Request", reason)  return }
-        store_save_pending(out.datadir, out.pending)
-        node_broadcast(out, json(Msg{t: "entry", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: out.cfg.port, from: 0, blocks: []Block{}, entry: e, block: Block{}, err: ""}))
+        store_append_pending(out.datadir, e)
+        node_broadcast(out, json(Msg{t: "entry", genesis: out.chain.blocks[0].hash, height: 0, tip: "", weight: 0, port: adv_port(out), nat: 0, from: 0, npending: 0, blocks: []Block{}, entries: []Entry{}, entry: e, block: Block{}, err: ""}))
         res = http_json("201 Created", json(PutResult{id: e.id, status: "pending", height: -1}))
         return
     }

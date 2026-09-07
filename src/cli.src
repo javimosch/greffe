@@ -16,6 +16,20 @@ func default_data() (d) {
     if len(d) == 0 { d = env("HOME") + "/.greffe" }
 }
 
+// data_dir_from_argv re-derives --data from args()/env() only: safe to call right after an
+// arena_reset(), when every previously computed string is gone.
+func data_dir_from_argv() (d) {
+    d = ""
+    a := args()
+    i := 1
+    while i < len(a) {
+        if (a[i] == "--data" || a[i] == "-d") && i + 1 < len(a) { d = a[i + 1] }
+        if has_prefix(a[i], "--data=") { d = substr(a[i], 7, len(a[i])) }
+        i = i + 1
+    }
+    if len(d) == 0 { d = default_data() }
+}
+
 func cli_flags(prog) (fs) {
     fs = new_flags(prog)
     fs = flag_str(fs, "data", "d", default_data(), "data directory (env GREFFE_DATA, default ~/.greffe)")
@@ -25,6 +39,7 @@ func cli_flags(prog) (fs) {
     fs = flag_str(fs, "validators", "", "", "init: comma-separated genesis validator public keys (default: this node)")
     fs = flag_str(fs, "peers", "", "", "init: comma-separated host:port peers")
     fs = flag_str(fs, "join", "j", "", "init: copy name/genesis/validators from a running node URL and peer with it")
+    fs = flag_str(fs, "genesis", "g", "", "init: genesis JSON (or a file holding it) as printed by `greffe genesis` — for nodes that cannot reach the first node")
     fs = flag_int(fs, "genesis-ts", "", "0", "init: genesis timestamp (must match across nodes; default now)")
     fs = flag_int(fs, "block-interval", "", "5", "init: seconds between out-of-turn seal attempts")
     fs = flag_int(fs, "sync-interval", "", "10", "init: seconds between peer syncs")
@@ -34,6 +49,8 @@ func cli_flags(prog) (fs) {
     fs = flag_int(fs, "limit", "l", "100", "blocks/entries: max items")
     fs = flag_bool(fs, "wait", "w", "put: block until the entry is sealed (up to 60s)")
     fs = flag_bool(fs, "force", "f", "init: overwrite an existing data directory")
+    fs = flag_bool(fs, "relay", "", "init: this node is a public relay (accepts many NAT'd subscribers; no key power)")
+    fs = flag_bool(fs, "nat", "", "init: this node cannot be dialled; it subscribes to its peers (relays) instead")
 }
 
 func node_url(fs) (u) {
@@ -66,7 +83,7 @@ func cmd_init(fs) {
     mkdir(dir)
     seedhex := to_hex(rand_bytes(32))
     pub := to_hex(ed25519_pub(from_hex(seedhex)))
-    cfg := Config{name: flag_get(fs, "name"), genesis_ts: flag_int_val(fs, "genesis-ts"), validators: csv_list(flag_get(fs, "validators")), members: []string{}, peers: csv_list(flag_get(fs, "peers")), port: flag_int_val(fs, "port"), block_interval: flag_int_val(fs, "block-interval"), sync_interval: flag_int_val(fs, "sync-interval")}
+    cfg := Config{name: flag_get(fs, "name"), genesis_ts: flag_int_val(fs, "genesis-ts"), validators: csv_list(flag_get(fs, "validators")), members: []string{}, peers: csv_list(flag_get(fs, "peers")), port: flag_int_val(fs, "port"), block_interval: flag_int_val(fs, "block-interval"), sync_interval: flag_int_val(fs, "sync-interval"), relay: flag_on(fs, "relay"), nat: flag_on(fs, "nat")}
     joinurl := flag_get(fs, "join")
     if len(joinurl) > 0 {
         status, body, err := http_get(joinurl + "/status")
@@ -88,6 +105,15 @@ func cmd_init(fs) {
         if index(host, ":") < 0 { host = host + ":" + str(st.port) }
         cfg.peers = add_unique(cfg.peers, host)
     }
+    gsrc := flag_get(fs, "genesis")
+    if len(gsrc) > 0 {
+        if has_prefix(gsrc, "{") == false { gsrc = read_file(gsrc) }
+        gp := parse(gsrc, Genesis{})
+        if len(gp.name) == 0 || gp.genesis_ts == 0 || len(gp.validators) == 0 { out_fail("bad --genesis: need {name, genesis_ts, validators}", 2) }
+        cfg.name = gp.name
+        cfg.genesis_ts = gp.genesis_ts
+        cfg.validators = gp.validators
+    }
     if len(cfg.name) == 0 { cfg.name = "greffe" }
     if cfg.genesis_ts == 0 { cfg.genesis_ts = now() }
     if len(cfg.validators) == 0 { cfg.validators = []string{pub} }
@@ -96,7 +122,17 @@ func cmd_init(fs) {
     store_rewrite_blocks(dir, []Block{genesis_block(cfg)})
     role := "full"
     if is_in(cfg.validators, pub) { role = "validator" }
+    if cfg.relay { role = "relay" }
+    if cfg.nat { role = role + "+nat" }
     out_ok("{\"data\":" + json(dir) + ",\"pub\":\"" + pub + "\",\"role\":\"" + role + "\",\"name\":" + json(cfg.name) + ",\"genesis\":\"" + genesis_hash(cfg) + "\",\"port\":" + str(cfg.port) + ",\"peers\":" + json(cfg.peers) + "}")
+}
+
+type Genesis struct { name string  genesis_ts int  validators []string  hash string }
+
+func cmd_genesis(fs) {
+    cfg, ok := store_load_config(flag_get(fs, "data"))
+    if ok == false { out_fail("no config in " + flag_get(fs, "data"), 1) }
+    out_ok(json(Genesis{name: cfg.name, genesis_ts: cfg.genesis_ts, validators: cfg.validators, hash: genesis_hash(cfg)}))
 }
 
 func cmd_key(fs) {
@@ -149,6 +185,7 @@ func cli_main(argv) {
     if cmd == "guide" { cmd_guide()  return }
     if cmd == "init" { cmd_init(fs)  return }
     if cmd == "key" { cmd_key(fs)  return }
+    if cmd == "genesis" { cmd_genesis(fs)  return }
     if cmd == "serve" {
         n, err := node_load(flag_get(fs, "data"))
         if len(err) > 0 { out_fail(err, 1) }
@@ -195,7 +232,7 @@ func cli_main(argv) {
 
 func usage() {
     eprint("usage: greffe <command> [flags]")
-    eprint("commands: init | serve | status | peers | blocks | block <h> | entries | entry <id> | pending | put --kind K --payload P [--wait] | grant validator|member <pub> | revoke ... | verify | key | guide | version")
+    eprint("commands: init | serve | status | peers | blocks | block <h> | entries | entry <id> | pending | put --kind K --payload P [--wait] | grant validator|member <pub> | revoke ... | verify | key | genesis | guide | version")
     eprint("flags: --data DIR (env GREFFE_DATA) · --node URL · run `greffe <cmd> --help` for all flags")
     exit(2)
 }

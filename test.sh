@@ -17,7 +17,9 @@ $G grant member "$(pub "$T/b")" --data "$T/a" --wait >/dev/null; sleep 3
 [[ $($G put --data "$T/b" --kind note --payload hi --wait | field height) == 3 ]] || { echo "FAIL member put via gossip"; exit 1; }
 $G grant validator "$(pub "$T/b")" --data "$T/a" --wait >/dev/null; sleep 3
 $G put --data "$T/b" --kind note --payload h5 --wait >/dev/null
-[[ $($G block 5 --data "$T/a" | field signer) == "$(pub "$T/b")" ]] || { echo "FAIL b did not seal in-turn"; exit 1; }
+EXP=$(python3 -c "import sys; v=sorted(sys.argv[1:]); print(v[5 % 2])" "$(pub "$T/a")" "$(pub "$T/b")")
+[[ $($G block 5 --data "$T/a" | field signer) == "$EXP" ]] || { echo "FAIL block 5 not sealed by the in-turn validator"; cat "$T/a.log" "$T/b.log"; exit 1; }
+[[ $($G status --data "$T/a" | field weight) == 10 ]] || { echo "FAIL weight: every block should be in-turn (2)"; exit 1; }
 kill "$(cat "$T/a.pid")"; sleep 1
 $G put --data "$T/b" --kind note --payload h6 --wait >/dev/null   # b seals out-of-turn alone
 start a; sleep 6
