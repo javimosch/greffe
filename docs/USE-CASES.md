@@ -4,9 +4,36 @@ title: Use cases
 
 # Use cases
 
-Each of these is a real shape of group, with the entry conventions it would use and what a
-member can verify. The first one is playable: `examples/federation.sh` runs it on your
-machine in under a minute.
+The first one is deployed and in use. The second is playable: `examples/federation.sh` runs it
+on your machine in under a minute. The rest are real shapes of group, with the entry
+conventions they would use and what a member can verify.
+
+## 0. The matériauthèque of the Cœur des Bauges — live
+
+**Who**: the residents of fourteen villages in a mountain massif in Savoie, through
+[enbauges.fr](https://enbauges.fr), their shared digital space. People give or lend building
+materials, tools and objects to each other, without accounts: an announcement is a title, a
+description and a way to be reached.
+
+**Where greffe sits**: the catalogue lives in a small backend on the site's server; greffe is
+the **public register** next to it. Every object published, lent, returned, gone or removed is
+recorded as a signed entry in a federation named for the territory, with kinds
+`materiautheque.item.add`, `.item.lent`, `.item.available`, `.item.gone`, `.item.removed`. The
+entry carries the object's id, title, category and commune, never the contact.
+
+**How it runs**: one validator on the site's server, one relay on a second host, the explorer
+enabled on both. The site records through greffe's authenticated `POST /put`, so it never
+holds a private key in the browser. If the register is down the catalogue keeps working and
+the failed record is logged for retry.
+
+**What anyone can check**: open the
+[register](https://registre-bauges.vps1.intrane.fr/ui), see what passed through the
+matériauthèque and when, and press "verify from genesis". The site cannot quietly edit that
+history, and neither can its operator.
+
+Source: [javimosch/materiautheque](https://github.com/javimosch/materiautheque) — a bkn hook,
+one page, and the greffe setup, about four hundred lines in total. Page:
+[enbauges.fr/materiautheque](https://enbauges.fr/materiautheque).
 
 ## 1. A federation of associations — the reference case
 
