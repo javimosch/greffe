@@ -48,7 +48,7 @@ func node_status(n) (st) {
 }
 
 // rec_json renders the entries of one raw block as Rec JSON objects (parse scoped to an arena).
-func rec_json(raw, kind, author, tipheight, limit) (out, count) {
+func rec_json(raw, kind, author, q, tipheight, limit) (out, count) {
     out = ""
     count = 0
     arena {
@@ -57,8 +57,9 @@ func rec_json(raw, kind, author, tipheight, limit) (out, count) {
         j := 0
         while j < len(b.entries) && len(xs) < limit {
             e := b.entries[j]
-            want := len(kind) == 0 || e.kind == kind || (kind == "gov" && is_gov_kind(e.kind))
+            want := kind_match(kind, e.kind)
             if want && len(author) > 0 { want = e.author == author }
+            if want && len(q) > 0 { want = contains(e.payload, q) }
             if want {
                 xs = append(xs, json(Rec{height: b.height, id: e.id, author: e.author, ts: e.ts, kind: e.kind, payload: e.payload, sig: e.sig, confirmations: tipheight - b.height + 1}))
             }
@@ -69,7 +70,16 @@ func rec_json(raw, kind, author, tipheight, limit) (out, count) {
     }
 }
 
-func entries_json(n, kind, author, from, limit) (s) {
+// kind_match: exact kind, "gov" for the four governance kinds, or "prefix.*" for a family.
+func kind_match(kind, k) (ok) {
+    ok = true
+    if len(kind) == 0 { return }
+    if kind == "gov" { ok = is_gov_kind(k)  return }
+    if has_suffix(kind, "*") { ok = has_prefix(k, substr(kind, 0, len(kind) - 1))  return }
+    ok = k == kind
+}
+
+func entries_json(n, kind, author, q, from, limit) (s) {
     parts := []string{}
     tip := chain_tip(n.chain)
     total := 0
@@ -77,13 +87,17 @@ func entries_json(n, kind, author, from, limit) (s) {
     if i < 1 { i = 1 }
     needle := "\"kind\":" + json(kind)
     if kind == "gov" { needle = "\"kind\":\"validator." }
+    if has_suffix(kind, "*") { needle = "\"kind\":\"" + substr(kind, 0, len(kind) - 1) }
     needle2 := "\"kind\":\"member."
+    qneedle := json(q)
+    if len(q) > 0 { qneedle = substr(qneedle, 1, len(qneedle) - 1) }   // JSON-escaped form without the quotes
     while i < len(n.chain.raws) && total < limit {
         raw := n.chain.raws[i]
         hit := len(kind) == 0 || contains(raw, needle) || (kind == "gov" && contains(raw, needle2))
         if hit && len(author) > 0 { hit = contains(raw, author) }
+        if hit && len(q) > 0 { hit = contains(raw, qneedle) }
         if hit {
-            chunk, c := rec_json(raw, kind, author, tip.height, limit - total)
+            chunk, c := rec_json(raw, kind, author, q, tip.height, limit - total)
             if c > 0 { parts = append(parts, chunk)  total = total + c }
         }
         i = i + 1
@@ -131,7 +145,7 @@ func guide_text() (s) {
     s = s + "GET  /peers                      known peers with height/weight/last seen\n"
     s = s + "GET  /blocks?from=N&limit=M      blocks (default from tip-10)\n"
     s = s + "GET  /blocks/N                   one block\n"
-    s = s + "GET  /entries?kind=K&author=PUB&from=H&limit=M   entries in chain order (kind=gov -> governance only)\n"
+    s = s + "GET  /entries?kind=K&author=PUB&q=TEXT&from=H&limit=M   entries in chain order (kind=gov -> governance; kind=app.* -> a family; q -> payload contains)\n"
     s = s + "GET  /ui                         read-only public explorer (when enabled with ui:true)\n"
     s = s + "GET  /entries/<id>               one entry (height -1 = still pending)\n"
     s = s + "GET  /pending                    entries waiting to be sealed\n"
@@ -177,7 +191,7 @@ func handle_http(n, req) (out, res) {
     if req.method == "GET" && p == "/entries" {
         limit := qint(req, "limit", 100)
         if limit > 1000 { limit = 1000 }
-        res = http_json("200 OK", entries_json(out, query(req, "kind"), query(req, "author"), qint(req, "from", 1), limit))
+        res = http_json("200 OK", entries_json(out, query(req, "kind"), query(req, "author"), query(req, "q"), qint(req, "from", 1), limit))
         return
     }
     if req.method == "GET" && has_prefix(p, "/entries/") {

@@ -1,6 +1,6 @@
 // greffe — CLI: agent-first (JSON on stdout, errors as JSON on stderr, exit 0 ok / 1 error / 2 usage / 90 verify failed).
 
-func greffe_version() (v) { v = "0.3.1" }
+func greffe_version() (v) { v = "0.3.2" }
 
 func out_ok(s) { println(s)  flush() }
 
@@ -43,7 +43,8 @@ func cli_flags(prog) (fs) {
     fs = flag_int(fs, "genesis-ts", "", "0", "init: genesis timestamp (must match across nodes; default now)")
     fs = flag_int(fs, "block-interval", "", "5", "init: seconds between out-of-turn seal attempts")
     fs = flag_int(fs, "sync-interval", "", "10", "init: seconds between peer syncs")
-    fs = flag_str(fs, "kind", "k", "", "put: entry kind (e.g. decision, tool.release, member.add)")
+    fs = flag_str(fs, "kind", "k", "", "put: entry kind (e.g. decision, tool.release, member.add); entries: exact, gov, or prefix.*")
+    fs = flag_str(fs, "q", "q", "", "entries: only entries whose payload contains this text")
     fs = flag_str(fs, "payload", "", "", "put: entry payload (any text, JSON encouraged)")
     fs = flag_int(fs, "from", "", "-1", "blocks/entries: start height")
     fs = flag_int(fs, "limit", "l", "100", "blocks/entries: max items")
@@ -213,7 +214,7 @@ func cli_main(argv) {
         return
     }
     if cmd == "entries" {
-        q := "?limit=" + str(flag_int_val(fs, "limit")) + "&kind=" + url_encode(flag_get(fs, "kind"))
+        q := "?limit=" + str(flag_int_val(fs, "limit")) + "&kind=" + url_encode(flag_get(fs, "kind")) + "&q=" + url_encode(flag_get(fs, "q"))
         if flag_int_val(fs, "from") >= 0 { q = q + "&from=" + str(flag_int_val(fs, "from")) }
         out_ok(api_get(fs, "/entries" + q))
         return

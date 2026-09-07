@@ -39,9 +39,11 @@ curl -s "http://127.0.0.1:$PA/entries?author=$(pub "$T/b")" | python3 -c "import
 PID=$(curl -s -X POST http://127.0.0.1:$PA/put -H "Authorization: Bearer testtoken-1234567890" -d '{"kind":"app.fact","payload":"{\"via\":\"put\"}"}' | field id)
 sleep 4; [[ $($G entry "$PID" --data "$T/a" | field author) == "$(pub "$T/a")" ]] || { echo "FAIL /put entry not sealed with node key"; exit 1; }
 [[ $(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:$PB/put -H "Authorization: Bearer x" -d '{}') == 404 ]] || { echo "FAIL /put should be disabled on b"; exit 1; }
+curl -s "http://127.0.0.1:$PA/entries?kind=member.*" | python3 -c "import sys,json; es=json.load(sys.stdin); assert len(es)==1 and es[0]['kind']=='member.add'" || { echo "FAIL kind prefix filter"; exit 1; }
+curl -s "http://127.0.0.1:$PA/entries?q=%7B%22via%22" | python3 -c "import sys,json; es=json.load(sys.stdin); assert len(es)==1 and 'via' in es[0]['payload']" || { echo "FAIL q payload filter"; exit 1; }
 # rate limit: loopback is exempt, so hit the node over the LAN address with a burst of 60 (limit 40/10s)
 LAN=$(hostname -I | awk '{print $1}')
 codes=$(for i in $(seq 1 60); do curl -s -o /dev/null -w "%{http_code}\n" http://$LAN:$PA/health; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
 echo "$codes" | grep -q "429" || { echo "FAIL no 429 in burst: $codes"; exit 1; }
 echo "$codes" | grep -q " 40 200" || { echo "FAIL expected exactly 40 x 200: $codes"; exit 1; }
-echo "OK: seal, sync, membership gate, grant, 2-validator round-robin, partition catch-up, restart persistence, explorer opt-in, gov/author filters, /put with token, rate limit"
+echo "OK: seal, sync, membership gate, grant, 2-validator round-robin, partition catch-up, restart persistence, explorer opt-in, gov/author filters, /put with token, kind prefix + q filters, rate limit"
