@@ -53,7 +53,8 @@
   <p class="lede">A lightweight blockchain for associations, cooperatives and collectives — any group where transparency matters and nobody should be able to quietly rewrite the record. <em>Signed entries, hash-chained blocks, replicated on the machines the group already has, verifiable by anyone from genesis. No money, no mining.</em></p>
   <div class="cta">
     <a class="btn primary" href="https://github.com/javimosch/greffe">Source on GitHub</a>
-    <a class="btn" href="https://github.com/javimosch/greffe/blob/main/docs/VISION.md">Vision &amp; north star</a>
+    <a class="btn" href="VISION.html">Vision &amp; north star</a>
+    <a class="btn" href="HOW-IT-WORKS.html">How it works</a>
     <a class="btn" href="#quickstart">Quick start</a>
     <a class="btn" href="llms.txt">llms.txt</a>
   </div>
@@ -105,6 +106,19 @@
     <li><b>Relay</b>: <code>greffe init --relay --genesis '…'</code> on a public host. Accepts up to 256 subscribers, pings them every 30 s.</li>
     <li><b>Forks behind NAT</b> are assembled from a side-block buffer on the receiver; the sender finds the common ancestor and pushes or pulls.</li>
   </ul>
+</section>
+
+<section>
+  <h2>Documentation for humans</h2>
+  <div class="grid">
+    <div class="card"><h3><a href="HOW-IT-WORKS.html">How it works</a></h3><p>Entries, blocks, validators, forks and relays in plain language, for the people who will rely on the record.</p></div>
+    <div class="card"><h3><a href="SECURITY.html">Security &amp; threat model</a></h3><p>Exactly what is guaranteed, by what mechanism, against whom — and what is not.</p></div>
+    <div class="card"><h3><a href="OPERATIONS.html">Running a node</a></h3><p>Install, roles, systemd, firewall, files to back up, watching it, upgrading, and what to do when things go wrong.</p></div>
+    <div class="card"><h3><a href="GOVERNANCE.html">Governance</a></h3><p>Bootstrapping a federation, admitting and revoking, key rotation, and the conventions a group should agree on.</p></div>
+    <div class="card"><h3><a href="USE-CASES.html">Use cases</a></h3><p>Federations, cooperatives, open-source collectives, community infrastructure, cross-organisation notarisation — with entry conventions.</p></div>
+    <div class="card"><h3><a href="FAQ.html">FAQ</a></h3><p>Is it a cryptocurrency? Who decides? What if we lose a key? Is it audited?</p></div>
+  </div>
+  <p style="margin-top:16px"><a href="https://github.com/javimosch/greffe/blob/main/examples/federation.sh">examples/federation.sh</a> plays the reference use case on your machine in about a minute: an umbrella validator, a relay, two member associations, a charter, a decision, a release, a subsidy, a refused outsider and a revocation.</p>
 </section>
 
 <section id="quickstart">

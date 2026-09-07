@@ -10,7 +10,11 @@ verifiable by anyone from genesis — and drops what makes blockchains expensive
 no mining, no staking, no global network. The group's own servers seal blocks; any member
 can add a machine as an extra node.
 
-See [docs/VISION.md](docs/VISION.md) for the north star and principles.
+Documentation for humans, at <https://javimosch.github.io/greffe/>:
+[How it works](docs/HOW-IT-WORKS.md) · [Security & threat model](docs/SECURITY.md) ·
+[Running a node](docs/OPERATIONS.md) · [Governance](docs/GOVERNANCE.md) ·
+[Use cases](docs/USE-CASES.md) · [FAQ](docs/FAQ.md) · [Vision](docs/VISION.md).
+`examples/federation.sh` plays the reference use case locally in about a minute.
 
 ## Model
 

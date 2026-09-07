@@ -1,3 +1,7 @@
+---
+title: Vision and north star
+---
+
 # greffe — vision and north star
 
 ## One sentence
