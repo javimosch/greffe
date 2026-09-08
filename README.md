@@ -29,6 +29,9 @@ records every object given or lent between residents in a public greffe
   `block_interval × distance` seconds so an offline server never stalls the chain.
   No empty blocks: an idle federation costs nothing.
 - **Fork choice**: highest total weight (in-turn block = 2, out-of-turn = 1), ties by lowest tip hash.
+  **Settled history is protected**: a node refuses any fork that would rewrite more than
+  `max_reorg` blocks (default 50), whatever its weight — so a validator cannot re-seal the past
+  and have honest nodes adopt it.
 - **Governance is on-chain**: `validator.add|remove` and `member.add|remove` entries
   (payload = public key) signed by a validator. Genesis fixes the name, timestamp and
   first validators; everything after is recorded in the chain itself.
@@ -48,6 +51,8 @@ records every object given or lent between residents in a public greffe
 - **Rate limit**: `rate_limit` requests per client IP per 10 s (default 300, loopback exempt);
   over the limit a client gets HTTP 429 or a `rate limited` peer reply. Public relays should
   keep it on.
+- **One domain, several nodes**: `--base-path /registre` serves the API and explorer under a
+  prefix, so a site can front its register with one reverse-proxy rule and read it same-origin.
 - **Memory**: blocks are held as raw JSON lines + small headers; entries are parsed on demand
   inside scoped arenas, and the single-actor loop resets its arena when RSS grows (state is
   rebuilt from disk). A node stays at a few MB idle and tens of MB under sustained writes.
@@ -72,6 +77,7 @@ greffe put --kind decision --payload '{"title":"adopt greffe"}' --wait
 greffe entries --kind decision
 greffe verify                                         # exit 0 ok / 90 broken
 greffe init --relay --ui ...                          # relay with the public explorer at /ui
+greffe init --ui --put-token auto --base-path /registre   # a site's register: explorer + server-side writes under one path
 ```
 
 Server-side apps that should record facts with a node's own key (a website, a bot) get an authenticated
@@ -93,12 +99,18 @@ anywhere.
 
 ## Status
 
-v0.3.0 — proof of concept live on four nodes: two NAT'd validators (a laptop, an LXC
-container) that only meet through two public relays (Hetzner, DigitalOcean). `./test.sh`
-covers seal, sync, the membership gate, grants, two-validator round-robin, partition
-catch-up and restart persistence; `./test-relay.sh` covers subscriptions, relay failover,
-no-relay hold, relay recovery and fork convergence through relays; `./bench.sh` (and
-`RELAY=1 ./bench.sh`) drive 2,000 writes and record RSS to bench.csv.
-`test.sh` also covers the opt-in explorer, the entry filters and the rate limit.
+v0.4.0. In production for one federation: the register of the
+[matériauthèque of the Cœur des Bauges](https://enbauges.fr/materiautheque), two validators on
+two machines (a site server and an independent VPS), served at
+[enbauges.fr/registre](https://enbauges.fr/registre/ui). An earlier four-node proof-of-concept
+federation across a laptop, an LXC container and two relays was retired once the real one ran.
+
+Gates: `test.sh` (seal, sync, membership gate, grants, two-validator round-robin, partition
+catch-up, restart persistence, explorer, filters, `/put`, rate limit), `test-relay.sh`
+(subscriptions, relay failover, no-relay hold, relay recovery, fork convergence through relays),
+`test-reorg.sh` (a heavier rewrite of settled history is refused), `bench.sh` and
+`RELAY=1 ./bench.sh` (2,000 writes, RSS recorded to bench.csv). `machin check` reports zero
+data-race diagnostics.
+
 Not yet: TLS between peers (use Tailscale/WireGuard), per-author entry quotas, pruning of
 old blocks from memory.

@@ -68,6 +68,11 @@ wins, and a tie goes to the lower block hash. Every node applies the same rule t
 data and lands on the same chain. Entries from the losing block are not lost: they go back
 to pending and are sealed again.
 
+There is one thing fork choice will never do: rewrite settled history. A node refuses any
+fork that would replace more than `max_reorg` blocks (fifty by default), however heavy it is.
+So a validator that re-sealed the past, even with its own valid key, would be ignored by every
+node that holds the honest record.
+
 ## Nodes behind home routers
 
 Most members' machines cannot be reached from the internet. Such a node starts with `--nat`
