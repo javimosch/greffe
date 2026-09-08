@@ -26,6 +26,14 @@ sealer, every governance change is in the record) and *bounded* (they cannot alt
 members already hold), but it does not prevent it. The defence is organisational: keep
 validators on machines run by different people, and keep members' copies.
 
+**Rewriting history.** A validator could re-seal the chain from an early block and offer a
+heavier version. Every node refuses a fork that would rewrite more than `max_reorg` settled
+blocks (default 50), whatever its weight, so a rewrite can only win on nodes that never held
+the honest history. With a single validator this guard is what keeps full nodes and relays
+honest; with two or more validators on machines held by different people, a rewrite also
+needs every key. A federation with one validator and one key holder has one point of trust,
+and should say so.
+
 **Withholding.** A validator or relay can refuse to relay entries or blocks. With two or more
 of each, this only delays; with one, it stalls. Run at least two validators and two relays.
 

@@ -444,6 +444,14 @@ func try_candidate(n, anc, extra, source) (out, changed) {
     while k <= anc && k < len(out.chain.raws) { cand = append(cand, out.chain.raws[k])  k = k + 1 }
     m := 0
     while m < len(extra) { cand = append(cand, extra[m])  m = m + 1 }
+    // reorg depth guard: a chain that rewrites more than max_reorg blocks of settled history is
+    // refused even if heavier. This is what stops a validator (or someone holding its key) from
+    // re-sealing the past and having every full node adopt it: settled blocks stay settled.
+    depth := chain_tip(out.chain).height - anc
+    if out.cfg.max_reorg > 0 && depth > out.cfg.max_reorg {
+        logmsg("REFUSED fork from " + source + ": would rewrite " + str(depth) + " blocks (max_reorg " + str(out.cfg.max_reorg) + ")")
+        return
+    }
     err, cw, ctip := chain_judge(out.cfg, cand)
     if len(err) > 0 { logmsg("reject fork from " + source + ": " + err)  return }
     if chain_better(cw, ctip, out.chain) == false { return }

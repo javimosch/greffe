@@ -57,6 +57,13 @@ For a user (non-root) node: `~/.config/systemd/user/greffe.service` with
 `ExecStart=%h/bin/greffe serve --data %h/.greffe`, then `systemctl --user enable --now greffe`
 and `loginctl enable-linger $USER` so it survives logout.
 
+## One domain, several nodes
+
+A node can serve its HTTP API and explorer under a prefix: `greffe init --base-path /registre`
+(or `"base_path"` in config). A reverse-proxy rule such as `Host(example.org) && PathPrefix(/registre)`
+then fronts it without a dedicated subdomain, and a page on that domain can read the register
+same-origin. Peers keep talking to the raw port.
+
 ## Firewall
 
 Open the node's port inbound on relays and on any node that should be dialled. A `--nat`
@@ -75,7 +82,7 @@ Everything lives in the data directory (`~/.greffe` or `--data`):
 | `peers.json` | peers learned from hellos | no |
 
 To edit `config.json`, stop the node, edit, start. Fields you may set by hand: `peers`,
-`nat`, `relay`, `ui`, `rate_limit`, `block_interval`, `sync_interval`. Never change `name`,
+`nat`, `relay`, `ui`, `rate_limit`, `max_reorg`, `base_path`, `put_token`, `block_interval`, `sync_interval`. Never change `name`,
 `genesis_ts` or `validators` on a running federation: they define the genesis hash, and a
 node with a different genesis is a different federation.
 

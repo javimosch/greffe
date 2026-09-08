@@ -21,13 +21,14 @@ recorded as a signed entry in a federation named for the territory, with kinds
 `materiautheque.item.add`, `.item.lent`, `.item.available`, `.item.gone`, `.item.removed`. The
 entry carries the object's id, title, category and commune, never the contact.
 
-**How it runs**: one validator on the site's server, one relay on a second host, the explorer
-enabled on both. The site records through greffe's authenticated `POST /put`, so it never
+**How it runs**: two validators, one on the site's server and one on a second host, the
+explorer enabled on both, served under `enbauges.fr/registre`. Every node refuses a fork that
+rewrites settled history (`max_reorg`), so the site cannot re-seal the past even with its key. The site records through greffe's authenticated `POST /put`, so it never
 holds a private key in the browser. If the register is down the catalogue keeps working and
 the failed record is logged for retry.
 
 **What anyone can check**: open the
-[register](https://registre-bauges.vps1.intrane.fr/ui), see what passed through the
+[register](https://enbauges.fr/registre/ui), see what passed through the
 matériauthèque and when, and press "verify from genesis". The site cannot quietly edit that
 history, and neither can its operator.
 

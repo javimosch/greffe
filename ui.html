@@ -37,7 +37,8 @@ footer{max-width:1080px;margin:0 auto;padding:20px;color:var(--muted);font-size:
 <footer>Read-only explorer served by this node. Everything shown comes from the same JSON API agents use: <code>/status /blocks /entries /pending /peers /verify</code>. Writes need a member key and go through the <code>greffe</code> CLI.</footer>
 <script>
 const $=s=>document.querySelector(s);const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const j=async p=>{const r=await fetch(p);if(!r.ok)throw new Error(p+" -> "+r.status);return r.json()};
+const BASE=location.pathname.replace(/\/ui\/?$/,'').replace(/\/$/,'');
+const j=async p=>{const r=await fetch(BASE+p);if(!r.ok)throw new Error(p+" -> "+r.status);return r.json()};
 const ts=t=>new Date(t*1000).toISOString().replace("T"," ").replace(".000Z","Z");
 const short=h=>`<a class="hash" title="${esc(h)}" href="#/entry/${esc(h)}">${esc(h.slice(0,12))}…</a>`;
 const shortKey=k=>`<span class="hash" title="${esc(k)}">${esc(k.slice(0,12))}…</span>`;

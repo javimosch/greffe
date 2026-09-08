@@ -1,7 +1,7 @@
 // greffe — HTTP API (same port as the peer protocol). JSON everywhere, no auth:
 // the chain is public by design; writes need a valid signature from a member.
 
-type Status struct { tool string  version string  name string  pub string  role string  nat bool  ui bool  rate_limit int  subscribers int  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  gcs int  uptime int  port int }
+type Status struct { tool string  version string  name string  pub string  role string  nat bool  ui bool  rate_limit int  max_reorg int  base_path string  subscribers int  height int  tip string  weight int  genesis string  validators []string  members []string  pending int  peers int  sealed int  reorgs int  gcs int  uptime int  port int }
 
 type Rec struct { height int  id string  author string  ts int  kind string  payload string  sig string  confirmations int }
 
@@ -44,7 +44,7 @@ func node_status(n) (st) {
     role := "full"
     if node_is_validator(n) { role = "validator" }
     if n.cfg.relay { role = "relay" }
-    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, ui: n.cfg.ui, rate_limit: n.cfg.rate_limit, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.heads[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
+    st = Status{tool: "greffe", version: greffe_version(), name: n.cfg.name, pub: n.pub, role: role, nat: n.cfg.nat, ui: n.cfg.ui, rate_limit: n.cfg.rate_limit, max_reorg: n.cfg.max_reorg, base_path: n.cfg.base_path, subscribers: len(g_subfds), height: tip.height, tip: tip.hash, weight: n.chain.weight, genesis: n.chain.heads[0].hash, validators: sort(n.chain.validators), members: n.chain.members, pending: len(n.pending), peers: len(n.peers), sealed: n.sealed, reorgs: n.reorgs, gcs: g_ctr["gcs"], uptime: now() - n.started, port: n.cfg.port}
 }
 
 // rec_json renders the entries of one raw block as Rec JSON objects (parse scoped to an arena).
@@ -161,6 +161,11 @@ func guide_text() (s) {
 func handle_http(n, req) (out, res) {
     out = n
     p := path_only(req.path)
+    // base_path: serve under a prefix (e.g. "/registre") so one domain can front several nodes
+    if len(out.cfg.base_path) > 1 && has_prefix(p, out.cfg.base_path) {
+        p = substr(p, len(out.cfg.base_path), len(p))
+        if len(p) == 0 { p = "/" }
+    }
     if req.method == "GET" && out.cfg.ui && (p == "/ui" || (p == "/" && contains(header(req, "accept"), "text/html"))) { res = http_html("200 OK", ui_html())  return }
     if req.method == "GET" && (p == "/" || p == "/llms.txt" || p == "/guide") { res = http_text("200 OK", guide_text())  return }
     if req.method == "GET" && p == "/health" { res = http_json("200 OK", "{\"ok\":true}")  return }

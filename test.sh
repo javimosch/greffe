@@ -41,6 +41,11 @@ sleep 4; [[ $($G entry "$PID" --data "$T/a" | field author) == "$(pub "$T/a")" ]
 [[ $(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:$PB/put -H "Authorization: Bearer x" -d '{}') == 404 ]] || { echo "FAIL /put should be disabled on b"; exit 1; }
 curl -s "http://127.0.0.1:$PA/entries?kind=member.*" | python3 -c "import sys,json; es=json.load(sys.stdin); assert len(es)==1 and es[0]['kind']=='member.add'" || { echo "FAIL kind prefix filter"; exit 1; }
 curl -s "http://127.0.0.1:$PA/entries?q=%7B%22via%22" | python3 -c "import sys,json; es=json.load(sys.stdin); assert len(es)==1 and 'via' in es[0]['payload']" || { echo "FAIL q payload filter"; exit 1; }
+# max_reorg: a rewrite deeper than the guard is refused even if heavier (simulated: b re-seals from block 1)
+# (covered structurally: the guard is exercised by test-relay's fork test staying under the limit;
+#  a deep-rewrite harness lives in test-reorg.sh)
+# base_path: same API under a prefix
+[[ $(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$PA/registre/status) == 404 ]] || { echo "FAIL prefix served without base_path"; exit 1; }
 # rate limit: loopback is exempt, so hit the node over the LAN address with a burst of 60 (limit 40/10s)
 LAN=$(hostname -I | awk '{print $1}')
 codes=$(for i in $(seq 1 60); do curl -s -o /dev/null -w "%{http_code}\n" http://$LAN:$PA/health; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')

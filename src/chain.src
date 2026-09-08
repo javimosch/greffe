@@ -17,7 +17,7 @@ type Block struct { height int  prev string  ts int  signer string  entries []En
 
 type Head struct { height int  prev string  ts int  signer string  hash string  sig string  n int }
 
-type Config struct { name string  genesis_ts int  validators []string  members []string  peers []string  port int  block_interval int  sync_interval int  relay bool  nat bool  ui bool  rate_limit int  put_token string }
+type Config struct { name string  genesis_ts int  validators []string  members []string  peers []string  port int  block_interval int  sync_interval int  relay bool  nat bool  ui bool  rate_limit int  put_token string  max_reorg int  base_path string }
 
 // Chain: validated state. heads[i]/raws[i] describe block i; byhash maps hash -> height.
 type Chain struct { heads []Head  raws []string  byhash map[string]int  validators []string  members []string  included map[string]bool  weight int }

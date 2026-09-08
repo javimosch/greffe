@@ -17,7 +17,7 @@ Documentation for humans, at <https://javimosch.github.io/greffe/>:
 `examples/federation.sh` plays the reference use case locally in about a minute.
 In real use: the [matériauthèque of the Cœur des Bauges](https://enbauges.fr/materiautheque)
 records every object given or lent between residents in a public greffe
-[register](https://registre-bauges.vps1.intrane.fr/ui).
+[register](https://enbauges.fr/registre/ui).
 
 ## Model
 
